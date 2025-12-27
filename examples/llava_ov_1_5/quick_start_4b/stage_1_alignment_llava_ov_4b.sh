@@ -1,14 +1,14 @@
-AIAK_TRAINING_PATH="${AIAK_TRAINING_PATH:-/workspace/LLaVA-OneVision-1.5}"
+AIAK_TRAINING_PATH="${AIAK_TRAINING_PATH:-/workspace/LLaVA-OneVision-2}"
 AIAK_MAGATRON_PATH="${AIAK_MAGATRON_PATH:-${AIAK_TRAINING_PATH%/}/aiak_megatron}"
 TP="${1:-1}"
 PP="${2:-1}"
 SEQ_LEN="${3:-32768}"
 MBS="${4:-1}"
-GBS="${5:-224}"
-NSTEP="${6:-3500}"
-DATA_PATH=${DATA_PATH:-"/workspace/dataset/LLaVA-NeXT-780k-webdataset"}
-TOKENIZER_PATH=${TOKENIZER_PATH:-"/workspace/LLaVA-OneVision-1.5/LLaVA-OneVision-1.5-4B-stage0"}
-CHECKPOINT_PATH=${CHECKPOINT_PATH:-"/workspace/LLaVA-OneVision-1.5/stage_1.5_mid_training_llava_ov_4b_release"}
+GBS="${5:-8}"
+NSTEP="${6:-2500}"
+DATA_PATH=${DATA_PATH:-"/workspace/dataset/LLaVA-558K-Webdataset"}
+TOKENIZER_PATH=${TOKENIZER_PATH:-"/workspace/LLaVA-OneVision-2/LLaVA-OneVision-1.5-4B-stage0"}
+CHECKPOINT_PATH=${CHECKPOINT_PATH:-"/workspace/LLaVA-OneVision-2/LLaVA-OneVision-1.5-4B-stage0_mcore_tp1_pp1"}
 
 #! /bin/bash
 # The script needs to be run on at least 1 nodes.
@@ -111,15 +111,14 @@ DATA_ARGS=(
 )
 
 TRAINING_ARGS=(
-    --image-resolution 1000
     --training-phase sft
-    --trainable-modules language_model adapter vision_model
+    --trainable-modules adapter
     --seq-length "${SEQ_LEN}"
     --max-position-embeddings 32768
     --init-method-std 0.02
     --micro-batch-size "${MBS}"
     --global-batch-size "${GBS}"
-    --lr 1.0e-5
+    --lr 1.0e-4
     --min-lr 1.0e-6
     --clip-grad 1.0
     --weight-decay 0
@@ -143,7 +142,7 @@ TRAINING_ARGS=(
     --ckpt-fully-parallel-load
     --recompute-granularity full
     --recompute-method uniform
-    --recompute-num-layers 1
+    --recompute-num-layers 4
 )
 
 MODEL_PARALLEL_ARGS=(
@@ -170,8 +169,8 @@ fi
 TM=$(date "+%Y-%m-%d_%H:%M:%S")
 logfile="${SAVE_CKPT_PATH}/run_${TM}_tp${TP}_pp${PP}_seqlen${SEQ_LEN}_mbs${MBS}_gbs${GBS}_${NSTEP}steps.log"
 
-export OFFLINE_PACKED_DATA='0'
-export OFFLINE_PACKING_VQA='0'
+export OFFLINE_PACKED_DATA='1'
+export OFFLINE_PACKING_VQA='1'
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
 export PYTORCH_CUDA_ALLOC_CONF=garbage_collection_threshold:0.72
 

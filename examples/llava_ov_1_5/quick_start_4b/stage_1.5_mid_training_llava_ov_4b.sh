@@ -1,14 +1,14 @@
-AIAK_TRAINING_PATH="${AIAK_TRAINING_PATH:-/workspace/LLaVA-OneVision-1.5}"
+AIAK_TRAINING_PATH="${AIAK_TRAINING_PATH:-/workspace/LLaVA-OneVision-2}"
 AIAK_MAGATRON_PATH="${AIAK_MAGATRON_PATH:-${AIAK_TRAINING_PATH%/}/aiak_megatron}"
 TP="${1:-1}"
 PP="${2:-1}"
 SEQ_LEN="${3:-32768}"
 MBS="${4:-1}"
-GBS="${5:-8}"
-NSTEP="${6:-2500}"
-DATA_PATH=${DATA_PATH:-"/workspace/dataset/LLaVA-558K-Webdataset"}
-TOKENIZER_PATH=${TOKENIZER_PATH:-"/workspace/LLaVA-OneVision-1.5/LLaVA-OneVision-1.5-4B-stage0"}
-CHECKPOINT_PATH=${CHECKPOINT_PATH:-"/workspace/LLaVA-OneVision-1.5/LLaVA-OneVision-1.5-4B-stage0_mcore_tp1_pp1"}
+GBS="${5:-16}"
+NSTEP="${6:-20000}"
+DATA_PATH=${DATA_PATH:-"/workspace/dataset/LLaVA-OneVision-1.5-Mid-Training-Webdataset-Quick-Start-3M"}
+TOKENIZER_PATH=${TOKENIZER_PATH:-"/workspace/LLaVA-OneVision-2/LLaVA-OneVision-1.5-4B-stage0"}
+CHECKPOINT_PATH=${CHECKPOINT_PATH:-"/workspace/LLaVA-OneVision-2/stage_1_alignment_llava_ov_4b_release"}
 
 #! /bin/bash
 # The script needs to be run on at least 1 nodes.
@@ -112,19 +112,19 @@ DATA_ARGS=(
 
 TRAINING_ARGS=(
     --training-phase sft
-    --trainable-modules adapter
+    --trainable-modules language_model adapter vision_model
     --seq-length "${SEQ_LEN}"
     --max-position-embeddings 32768
     --init-method-std 0.02
     --micro-batch-size "${MBS}"
     --global-batch-size "${GBS}"
-    --lr 1.0e-4
+    --lr 1.0e-5
     --min-lr 1.0e-6
     --clip-grad 1.0
-    --weight-decay 0
+    --weight-decay 0.01
     --optimizer adam
     --adam-beta1 0.9
-    --adam-beta2 0.99
+    --adam-beta2 0.95
     --adam-eps 1e-05
     --norm-epsilon 1e-6
     --train-iters "$NSTEP"

@@ -88,7 +88,7 @@
 - [Acknowledgement](#acknowledgement)
 
 
-## Introduction
+<!-- ## Introduction
 **LLaVA-OneVision-1.5** introduces a family of fully open-source large multimodal models (LMMs) that operate on **native-resolution images**, achieve **state-of-the-art** performance, and require comparatively **lower training costs**.
 
 #### **Superior Performance**
@@ -191,7 +191,7 @@ output_text = processor.batch_decode(
 )
 print(output_text)
 
-```
+``` -->
 
 ## Evaluation
 ```
@@ -214,8 +214,8 @@ We strongly recommend using the docker environment for a seamless experience. Th
 
 ```bash
 # Clone repository
-git clone https://github.com/EvolvingLMMs-Lab/LLaVA-OneVision-1.5.git
-cd LLaVA-OneVision-1.5
+git clone https://github.com/anxiangsir/LLaVA-OneVision-2.git
+cd LLaVA-OneVision-2
 
 docker build -t llava_megatron:25.04 .
 
@@ -223,8 +223,8 @@ docker build -t llava_megatron:25.04 .
 docker run -it --gpus all \
     --ipc host --net host --privileged --cap-add IPC_LOCK \
     --ulimit memlock=-1 --ulimit stack=67108864 --rm \
-    -v $(pwd):/workspace/LLaVA-OneVision-1.5 \
-    -w /workspace/LLaVA-OneVision-1.5 \
+    -v $(pwd):/workspace/LLaVA-OneVision-2 \
+    -w /workspace/LLaVA-OneVision-2 \
     --name "llava_megatron_container" \
     llava_megatron:25.04 /bin/bash
 ```
@@ -233,8 +233,8 @@ docker run -it --gpus all \
 
 You have two options to get started with LLaVA-OneVision-1.5-stage-0:
 
-#### Option 1: Download pre-trained model from Hugging Face
-Download our `LLaVA-OneVision-1.5-4B-stage0` model directly from [Hugging Face](https://huggingface.co/lmms-lab/LLaVA-OneVision-1.5-4B-stage0).
+<!-- #### Option 1: Download pre-trained model from Hugging Face
+Download our `LLaVA-OneVision-1.5-4B-stage0` model directly from [Hugging Face](https://huggingface.co/lmms-lab/LLaVA-OneVision-1.5-4B-stage0). -->
 
 #### Option 2: Merge initial weights yourself
 Alternatively, you can merge the initial weights from the original ViT and LLM:
@@ -249,7 +249,7 @@ Note: When merging weights, the adapter component will be initialized with defau
 Convert the model from Hugging Face format to Megatron format:
 
 ```bash
-AIAK_TRAINING_PATH=/workspace/LLaVA-OneVision-1.5 bash examples/llava_ov_1_5/convert/convert_4b_hf_to_mcore.sh \
+AIAK_TRAINING_PATH=/workspace/LLaVA-OneVision-2 bash examples/llava_ov_1_5/convert/convert_4b_hf_to_mcore.sh \
 LLaVA-OneVision-1.5-4B-stage0 \
 LLaVA-OneVision-1.5-4B-stage0_mcore_tp1_pp1 \
 1 1
@@ -268,7 +268,7 @@ Download LLaVA from [LLaVA-558K-Webdataset](https://huggingface.co/datasets/lmms
 #   TOKENIZER_PATH      Hugging Face tokenizer directory
 #   CHECKPOINT_PATH     Megatron-formatted checkpoint directory (e.g., mcore TP1/PP1)
 #   SAVE_CKPT_PATH      Output directory for saving training checkpoints
-AIAK_TRAINING_PATH=/workspace/LLaVA-OneVision-1.5 \
+AIAK_TRAINING_PATH=/workspace/LLaVA-OneVision-2 \
 DATA_PATH=LLaVA-558K-Webdataset \
 TOKENIZER_PATH=LLaVA-OneVision-1.5-4B-stage0 \
 CHECKPOINT_PATH=LLaVA-OneVision-1.5-4B-stage0_mcore_tp1_pp1 \
@@ -287,7 +287,7 @@ stage_1_alignment_llava_ov_4b/iter_0002500/ \
 stage_1_alignment_llava_ov_4b_release 1 1
 # ============================================================
 # Launch
-AIAK_TRAINING_PATH=/workspace/LLaVA-OneVision-1.5 \
+AIAK_TRAINING_PATH=/workspace/LLaVA-OneVision-2 \
 DATA_PATH=LLaVA-OneVision-1.5-Mid-Training-Webdataset-Quick-Start-3M \
 TOKENIZER_PATH=LLaVA-OneVision-1.5-4B-stage0 \
 CHECKPOINT_PATH=stage_1_alignment_llava_ov_4b_release \
@@ -307,7 +307,7 @@ stage_1.5_mid_training_llava_ov_4b/iter_0020000/ \
 stage_1.5_mid_training_llava_ov_4b_release 1 1
 # ============================================================
 # # Launch
-AIAK_TRAINING_PATH=/workspace/LLaVA-OneVision-1.5 \
+AIAK_TRAINING_PATH=/workspace/LLaVA-OneVision-2 \
 DATA_PATH=LLaVA-NeXT-780k-Webdataset \
 TOKENIZER_PATH=LLaVA-OneVision-1.5-4B-stage0 \
 CHECKPOINT_PATH=stage_1.5_mid_training_llava_ov_4b_release \
@@ -317,7 +317,7 @@ bash examples/llava_ov_1_5/quick_start/stage_2_instruct_llava_ov_4b.sh
 
 ### 6. Convert mcore to Hugging Face
 ```bash
-AIAK_TRAINING_PATH=/workspace/LLaVA-OneVision-1.5 \
+AIAK_TRAINING_PATH=/workspace/LLaVA-OneVision-2 \
 bash examples/llava_ov_1_5/convert/convert_4b_mcore_to_hf.sh \
 stage_2_instruct_llava_ov_4b/iter_0003500 \
 LLaVA-OneVision-1.5-4B-3M-Mid-Training-780K-Instruct \
@@ -331,7 +331,7 @@ find LLaVA-OneVision-1.5-4B-stage0/ -type f -not -iname '*safetensors*' -exec cp
 # pip install git+https://github.com/EvolvingLMMs-Lab/lmms-eval.git
 CUDA_VISIBLE_DEVICES=4,5,6,7 accelerate launch \
 --num_processes=4 --main_process_port 12399 -m lmms_eval --model=llava_onevision1_5 --batch_size=1 --tasks=mme \
---model_args=pretrained=/workspace/LLaVA-OneVision-1.5/LLaVA-OneVision-1.5-4B-3M-Mid-Training-780K-Instruct,max_pixels=3240000
+--model_args=pretrained=/workspace/LLaVA-OneVision-2/LLaVA-OneVision-1.5-4B-3M-Mid-Training-780K-Instruct,max_pixels=3240000
 ```
 
 ## Fully Reproducing Guide
