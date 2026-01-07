@@ -8,10 +8,10 @@ TP=$3
 PP=$4
 
 
-bash $AIAK_TRAINING_PATH/examples/llava_ov_1_5/convert/convert_2b_mcore_to_hf.sh \
+bash $AIAK_TRAINING_PATH/examples/llava_onevision2/convert/convert_2b_mcore_to_hf.sh \
     $LOAD tmp_hf $TP $PP
 
-bash $AIAK_TRAINING_PATH/examples/llava_ov_1_5/convert/convert_2b_hf_to_mcore.sh \
+bash $AIAK_TRAINING_PATH/examples/llava_onevision2/convert/convert_2b_hf_to_mcore.sh \
     tmp_hf $SAVE $TP $PP
 
 rm -rf tmp_hf
