@@ -1,20 +1,20 @@
 #!/bin/bash
-# LLaVA-OneVision2 4B Model Consistency Check Script
+# LLaVA-OneVision2 8B Model Consistency Check Script
 #
 # This script compares the model outputs between HuggingFace and Megatron-LM 
 # implementations to verify layer-by-layer consistency for both vision encoder
 # and language model.
 #
 # Usage:
-#   bash examples/llava_onevision2/qwen3_4b/check_model_consistency.sh [TP] [PP]
+#   bash examples/llava_onevision2/qwen3_8b/check_model_consistency.sh [TP] [PP]
 #
 # Arguments:
 #   TP: Tensor parallel size (default: 1)
 #   PP: Pipeline parallel size (default: 1)
 #
 # Environment Variables:
-#   HF_MODEL_PATH: Path to HuggingFace model (default: /ov2/pretrain_models/llava_onevision2/llava_onevision2_qwen3_4b_stage0)
-#   MCORE_CHECKPOINT_PATH: Path to Megatron checkpoint (default: /ov2/pretrain_models/llava_onevision2/llava_onevision2_qwen3_4b_stage0_mcore_tp1_pp1)
+#   HF_MODEL_PATH: Path to HuggingFace model (default: /ov2/pretrain_models/llava_onevision2/llava_onevision2_qwen3_8b_stage0)
+#   MCORE_CHECKPOINT_PATH: Path to Megatron checkpoint (default: /ov2/pretrain_models/llava_onevision2/llava_onevision2_qwen3_8b_stage0_mcore_tp1_pp1)
 #   TEST_IMAGE_PATH: Path to test image (default: http://images.cocodataset.org/val2017/000000039769.jpg)
 
 set -e
@@ -27,8 +27,8 @@ AIAK_TRAINING_PATH="${AIAK_TRAINING_PATH:-/workspace/LLaVA-OneVision-2}"
 AIAK_MAGATRON_PATH="${AIAK_MAGATRON_PATH:-${AIAK_TRAINING_PATH%/}/aiak_megatron}"
 
 # Model paths
-HF_MODEL_PATH="${HF_MODEL_PATH:-/ov2/pretrain_models/llava_onevision2/llava_onevision2_qwen3_4b_stage0}"
-MCORE_CHECKPOINT_PATH="${MCORE_CHECKPOINT_PATH:-/ov2/pretrain_models/llava_onevision2/llava_onevision2_qwen3_4b_stage0_mcore_tp1_pp1}"
+HF_MODEL_PATH="${HF_MODEL_PATH:-/ov2/pretrain_models/llava_onevision2/llava_onevision2_qwen3_8b_stage0}"
+MCORE_CHECKPOINT_PATH="${MCORE_CHECKPOINT_PATH:-/ov2/pretrain_models/llava_onevision2/llava_onevision2_qwen3_8b_stage0_mcore_tp1_pp1}"
 PREPROCESSOR_PATH="${PREPROCESSOR_PATH:-/ov2/pretrain_models/preprocessor/preprocessor_llava_onevision1_5}"
 TEST_IMAGE_PATH="${TEST_IMAGE_PATH:-http://images.cocodataset.org/val2017/000000039769.jpg}"
 
@@ -114,7 +114,7 @@ fi
 # ============================================================================
 
 MODEL_ARGS=(
-    --model-name llava-onevision2-4b
+    --model-name llava-onevision2-8b
 
     --tokenizer-type HFTokenizer
     --hf-tokenizer-path $HF_MODEL_PATH
@@ -166,7 +166,7 @@ MODEL_PARALLEL_ARGS=(
 # ============================================================================
 
 echo "============================================================"
-echo "LLaVA-OneVision2 4B Model Consistency Check"
+echo "LLaVA-OneVision2 8B Model Consistency Check"
 echo "============================================================"
 echo "HuggingFace Model:   ${HF_MODEL_PATH}"
 echo "Megatron Checkpoint: ${MCORE_CHECKPOINT_PATH}"
