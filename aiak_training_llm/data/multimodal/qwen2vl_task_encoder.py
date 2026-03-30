@@ -785,6 +785,8 @@ class Qwen2VLTaskEncoder(TaskEncoder):
                 key_fn=sort_key_fn,
                 ascending=sort_ascending,
                 worker_config=worker_config,
+                warmup_steps=getattr(self.args, "length_sort_warmup_steps", 0),
+                initial_pool_size=getattr(self.args, "length_sort_initial_pool_size", 10),
             )
         dataset = self.build_batch(
             dataset,

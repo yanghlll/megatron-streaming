@@ -60,6 +60,8 @@ class PackedSeparateSortDataset(SavableDataset[T_sample]):
         worker_config: WorkerConfig,
         tail_shuffle: bool = True,
         shuffle_seed: int | None = None,
+        warmup_steps: int = 0,
+        initial_pool_size: int = 10,
     ):
         super().__init__(worker_config=worker_config)
         assert pool_size > 0
@@ -75,16 +77,29 @@ class PackedSeparateSortDataset(SavableDataset[T_sample]):
         )
         self._rng = random.Random(base_seed)
 
+        self.warmup_steps = warmup_steps
+        self.initial_pool_size = min(initial_pool_size, pool_size)
+
+    def _get_current_pool_size(self, pool_flush_count: int) -> int:
+        """Calculate current pool size with warmup."""
+        if self.warmup_steps == 0 or pool_flush_count >= self.warmup_steps:
+            return self.pool_size
+        progress = pool_flush_count / self.warmup_steps
+        return self.initial_pool_size + int((self.pool_size - self.initial_pool_size) * progress)
+
     def __len__(self):
         return len(self.dataset)
 
     def __iter__(self) -> Iterator[T_sample]:
         pool: list[T_sample] = []
+        pool_flush_count = 0
         for batch_idx, sample in enumerate(self.dataset):
             pool.append(sample)
-            if len(pool) >= self.pool_size:
+            current_pool_size = self._get_current_pool_size(pool_flush_count)
+            if len(pool) >= current_pool_size:
                 yield from self._flush_pool(pool, batch_idx)
                 pool.clear()
+                pool_flush_count += 1
         if pool:
             yield from self._flush_tail(pool)
             pool.clear()
@@ -190,5 +205,7 @@ class PackedSeparateSortDataset(SavableDataset[T_sample]):
             "pool_size": self.pool_size,
             "ascending": self.ascending,
             "tail_shuffle": self.tail_shuffle,
+            "warmup_steps": self.warmup_steps,
+            "initial_pool_size": self.initial_pool_size,
             "dataset": self.dataset.config(),
         }

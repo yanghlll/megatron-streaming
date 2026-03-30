@@ -1,4 +1,5 @@
-""" Dataset and DataLoader related utilities """
+"""Dataset and DataLoader related utilities"""
+
 import os
 import torch
 import torch.nn.functional as F
@@ -11,7 +12,7 @@ from .task_encoder import print_error_handler
 
 
 def get_train_dataset(task_encoder):
-    """ Get the training dataset """
+    """Get the training dataset"""
     args = get_args()
     worker_config = energon.WorkerConfig(
         rank=parallel_state.get_data_parallel_rank(),
@@ -19,7 +20,7 @@ def get_train_dataset(task_encoder):
         num_workers=args.num_workers,
         data_parallel_group=parallel_state.get_data_parallel_group(),
         worker_debug_path=None,
-        worker_log_level=0
+        worker_log_level=0,
     )
     train_ds = energon.get_train_dataset(
         args.data_path[0],
@@ -36,7 +37,7 @@ def get_train_dataset(task_encoder):
 
 
 def get_train_loader(train_ds, collator=None):
-    """ Get the training loader """
+    """Get the training loader"""
     args = get_args()
     train_dataloader = energon.get_savable_loader(train_ds)
     if args.load is not None:
@@ -45,7 +46,8 @@ def get_train_loader(train_ds, collator=None):
             data_save_name = get_checkpoint_name(
                 args.dataloader_save,
                 args.iteration,
-                pipeline_rank=0,    # Only the first pipeline parallel rank stores the dataloader checkpoint.
+                tensor_rank=0,  # Dataloader checkpoint is saved by TP rank 0 only.
+                pipeline_rank=0,  # Only the first pipeline parallel rank stores the dataloader checkpoint.
                 basename=f"train_dataloader_dprank{dp_rank:03d}.pt",
             )
             if os.path.exists(data_save_name):
@@ -62,6 +64,7 @@ def get_train_loader(train_ds, collator=None):
 
 class EnergonDataloader:
     """A wrapper to use Megatron Energon dataloader with the Megatron-LM training loop."""
+
     def __init__(self, dataloader, collator=None):
         self._dataloader = dataloader
         self._collator = collator
@@ -71,32 +74,29 @@ class EnergonDataloader:
         features = self._iter.__next__()
         if self._collator is not None:
             padded = self._collator.tokenizer.pad(
-                {"input_ids": features['tokens']},
+                {"input_ids": features["tokens"]},
                 padding=self._collator.padding,
                 max_length=self._collator.max_length,
                 pad_to_multiple_of=self._collator.pad_to_multiple_of,
             )
-            paded_length = padded['input_ids'].shape[1] - features['tokens'].shape[1]
-            features['tokens'] = padded["input_ids"]
-            features['labels'] = F.pad(
-                features['labels'],
-                (0, paded_length),
-                "constant",
-                self._collator.label_pad_token_id
+            paded_length = padded["input_ids"].shape[1] - features["tokens"].shape[1]
+            features["tokens"] = padded["input_ids"]
+            features["labels"] = F.pad(
+                features["labels"], (0, paded_length), "constant", self._collator.label_pad_token_id
             )
-            features['attn_mask'] = F.pad(features['attn_mask'], (0, paded_length), "constant", True)
+            features["attn_mask"] = F.pad(features["attn_mask"], (0, paded_length), "constant", True)
         return features
 
     def __iter__(self):
         return self._iter.__iter__()
 
     def save_state(self):
-        """ Save the current state of this dataloader """
+        """Save the current state of this dataloader"""
         return self._dataloader.save_state_rank()
 
 
 def cyclic_iter(iter):
-    """ Infinite iteration over an iterator """
+    """Infinite iteration over an iterator"""
     while True:
         for x in iter:
             yield x

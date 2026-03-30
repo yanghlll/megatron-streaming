@@ -1,5 +1,6 @@
 # Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
 """dataloader provider."""
+
 import os
 
 import torch
@@ -19,7 +20,7 @@ from megatron.core.num_microbatches_calculator import get_num_microbatches
 from megatron.core.parallel_state import (
     get_tensor_model_parallel_rank,
     get_pipeline_model_parallel_world_size,
-    get_pipeline_model_parallel_rank
+    get_pipeline_model_parallel_rank,
 )
 from megatron.training import get_args
 from megatron.training.checkpointing import get_checkpoint_name
@@ -69,7 +70,7 @@ def datasets_provider(worker_config=None):
 
 def is_first_or_last_stage(pp_size, encoder_pipeline_model_parallel_size):
     """Check if the current pipeline parallel stage is the first or last stage."""
-    if pp_size == 1:    # No pipeline parallelism.
+    if pp_size == 1:  # No pipeline parallelism.
         return True
 
     is_valid_rank = False
@@ -130,7 +131,8 @@ def train_valid_test_dataloaders_provider(train_val_test_num_samples):
             data_save_name = get_checkpoint_name(
                 args.dataloader_save,
                 args.iteration,
-                pipeline_rank=0,    # Only the first pipeline parallel rank stores the dataloader checkpoint.
+                tensor_rank=0,  # Dataloader checkpoint is saved by TP rank 0 only.
+                pipeline_rank=0,  # Only the first pipeline parallel rank stores the dataloader checkpoint.
                 basename=f"train_dataloader_dprank{dp_rank:03d}.pt",
             )
             if os.path.exists(data_save_name):
@@ -143,10 +145,7 @@ def train_valid_test_dataloaders_provider(train_val_test_num_samples):
             else:
                 print(f"dataset state {data_save_name} does not exist")
 
-    valid_dataloader = [
-        EnergonDataloader(get_loader(valid_ds, worker_config=worker_config))
-        for valid_ds in valid_ds1
-    ]
+    valid_dataloader = [EnergonDataloader(get_loader(valid_ds, worker_config=worker_config)) for valid_ds in valid_ds1]
     test_dataloader = None
 
     return EnergonDataloader(train_dataloader), valid_dataloader, EnergonDataloader(test_dataloader)
@@ -154,6 +153,7 @@ def train_valid_test_dataloaders_provider(train_val_test_num_samples):
 
 class EnergonDataloader:
     """A wrapper to use Megatron Energon dataloader with the Megatron-LM training loop."""
+
     def __init__(self, dataloader):
         self._dataloader = dataloader
         self._iter = iter(cyclic_iter(dataloader))
