@@ -1,4 +1,5 @@
 import os
+import json
 
 import torch
 
@@ -33,13 +34,23 @@ class DenseVariant:
         # silently falls back to a stock ViTConfig (768/12 layers/patch16), which would
         # corrupt the empty model shape for fixtures that ship weights without a config.
         if vit_path is not None and os.path.isfile(os.path.join(vit_path, "config.json")):
-            vit_cfg = AutoConfig.from_pretrained(vit_path, trust_remote_code=True)
-            cfg.vision_config.patch_size = getattr(vit_cfg, "patch_size", cfg.vision_config.patch_size)
-            cfg.vision_config.image_size = getattr(vit_cfg, "image_size", cfg.vision_config.image_size)
-            cfg.vision_config.hidden_size = vit_cfg.hidden_size
-            cfg.vision_config.num_hidden_layers = vit_cfg.num_hidden_layers
-            cfg.vision_config.num_attention_heads = vit_cfg.num_attention_heads
-            cfg.vision_config.intermediate_size = vit_cfg.intermediate_size
+            try:
+                vit_cfg = AutoConfig.from_pretrained(vit_path, trust_remote_code=True)
+                cfg.vision_config.patch_size = getattr(vit_cfg, "patch_size", cfg.vision_config.patch_size)
+                cfg.vision_config.image_size = getattr(vit_cfg, "image_size", cfg.vision_config.image_size)
+                cfg.vision_config.hidden_size = vit_cfg.hidden_size
+                cfg.vision_config.num_hidden_layers = vit_cfg.num_hidden_layers
+                cfg.vision_config.num_attention_heads = vit_cfg.num_attention_heads
+                cfg.vision_config.intermediate_size = vit_cfg.intermediate_size
+            except ValueError:
+                with open(os.path.join(vit_path, "config.json"), "r", encoding="utf-8") as f:
+                    vit_cfg = json.load(f)
+                cfg.vision_config.patch_size = vit_cfg.get("patch_size", cfg.vision_config.patch_size)
+                cfg.vision_config.image_size = vit_cfg.get("image_size", cfg.vision_config.image_size)
+                cfg.vision_config.hidden_size = vit_cfg["hidden_size"]
+                cfg.vision_config.num_hidden_layers = vit_cfg["num_hidden_layers"]
+                cfg.vision_config.num_attention_heads = vit_cfg["num_attention_heads"]
+                cfg.vision_config.intermediate_size = vit_cfg["intermediate_size"]
             if hasattr(processor.image_processor, "patch_size"):
                 processor.image_processor.patch_size = cfg.vision_config.patch_size
         cfg.vision_config.use_patch_position_encoding = use_patch_pos_enc

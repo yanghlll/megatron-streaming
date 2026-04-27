@@ -4,6 +4,7 @@ import torch
 def remap_vit(sd: dict) -> dict:
     out, qkv_w, qkv_b = {}, {}, {}
     for k, v in sd.items():
+        k = k.replace("encoder._orig_mod.", "encoder.", 1)
         if k.endswith(".inv_freq") or k.startswith(("head.", "layernorm_post.")):
             continue
         for proj in ("q_proj", "k_proj", "v_proj"):
