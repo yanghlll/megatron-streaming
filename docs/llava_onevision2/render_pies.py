@@ -370,13 +370,11 @@ SPECS = [
         subtitle="2.78M samples",
         items=[
             ("OSD Reasoning", 785_559),
-            ("CA-1M Visual Choice", 539_976),
-            ("CA-1M Templates", 505_579),
+            ("CA-1M", 1_045_555),
             ("Crosspoint", 377_765),
             ("RoboRefer (Sim)", 245_926),
             ("Pointing & VG", 167_938),
             ("RefCOCO Family", 149_534),
-            ("ERQA", 11_172),
         ],
     ),
 ]
