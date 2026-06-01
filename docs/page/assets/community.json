@@ -1,11 +1,11 @@
 {
   "owner": "EvolvingLMMs-Lab",
   "repo": "LLaVA-OneVision-2",
-  "generated_at": "2026-05-31T03:57:44.626491+00:00",
+  "generated_at": "2026-06-01T04:11:31.930186+00:00",
   "contributors": [
     {
       "login": "anxiangsir",
-      "contributions": 198,
+      "contributions": 199,
       "avatar_url": "https://avatars.githubusercontent.com/u/31175974?v=4"
     },
     {
@@ -14,7 +14,7 @@
       "avatar_url": "https://avatars.githubusercontent.com/u/35927125?v=4"
     },
     {
-      "login": "FeilongTangmonash",
+      "login": "Feilong607",
       "contributions": 18,
       "avatar_url": "https://avatars.githubusercontent.com/u/152372878?v=4"
     },
@@ -711,7 +711,7 @@
       "avatar_url": "https://avatars.githubusercontent.com/u/4509744?v=4"
     },
     {
-      "login": "FeilongTangmonash",
+      "login": "Feilong607",
       "starred_at": "2025-09-17T14:08:34Z",
       "avatar_url": "https://avatars.githubusercontent.com/u/152372878?v=4"
     },
@@ -5079,6 +5079,36 @@
       "login": "fuyuming",
       "starred_at": "2026-05-31T02:04:32Z",
       "avatar_url": "https://avatars.githubusercontent.com/u/32798298?v=4"
+    },
+    {
+      "login": "ElsieSHEN",
+      "starred_at": "2026-05-31T10:47:41Z",
+      "avatar_url": "https://avatars.githubusercontent.com/u/45813066?v=4"
+    },
+    {
+      "login": "CodeDayu",
+      "starred_at": "2026-05-31T12:57:19Z",
+      "avatar_url": "https://avatars.githubusercontent.com/u/30498465?v=4"
+    },
+    {
+      "login": "mudevai",
+      "starred_at": "2026-05-31T16:36:52Z",
+      "avatar_url": "https://avatars.githubusercontent.com/u/161218310?v=4"
+    },
+    {
+      "login": "wooksu",
+      "starred_at": "2026-05-31T23:42:44Z",
+      "avatar_url": "https://avatars.githubusercontent.com/u/106130258?v=4"
+    },
+    {
+      "login": "Darz2",
+      "starred_at": "2026-05-31T23:46:46Z",
+      "avatar_url": "https://avatars.githubusercontent.com/u/64959853?v=4"
+    },
+    {
+      "login": "AIwem",
+      "starred_at": "2026-06-01T03:28:08Z",
+      "avatar_url": "https://avatars.githubusercontent.com/u/32017215?v=4"
     }
   ]
 }
