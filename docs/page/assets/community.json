@@ -1,7 +1,7 @@
 {
   "owner": "EvolvingLMMs-Lab",
   "repo": "LLaVA-OneVision-2",
-  "generated_at": "2026-07-02T03:40:08.348619+00:00",
+  "generated_at": "2026-07-03T03:20:49.132941+00:00",
   "contributors": [
     {
       "login": "anxiangsir",
@@ -3041,7 +3041,7 @@
       "avatar_url": "https://avatars.githubusercontent.com/u/45418163?v=4"
     },
     {
-      "login": "Zhao-jiawang",
+      "login": "Zhao-Jiawang",
       "starred_at": "2025-11-13T02:48:50Z",
       "avatar_url": "https://avatars.githubusercontent.com/u/146197300?v=4"
     },
@@ -5694,6 +5694,36 @@
       "login": "Maqkccx",
       "starred_at": "2026-07-02T03:02:20Z",
       "avatar_url": "https://avatars.githubusercontent.com/u/186673654?v=4"
+    },
+    {
+      "login": "guruprasaad123",
+      "starred_at": "2026-07-02T09:01:08Z",
+      "avatar_url": "https://avatars.githubusercontent.com/u/19173193?v=4"
+    },
+    {
+      "login": "sinhaparth5",
+      "starred_at": "2026-07-02T09:25:24Z",
+      "avatar_url": "https://avatars.githubusercontent.com/u/41264578?v=4"
+    },
+    {
+      "login": "xiaoheng1122",
+      "starred_at": "2026-07-02T13:57:16Z",
+      "avatar_url": "https://avatars.githubusercontent.com/u/165883650?v=4"
+    },
+    {
+      "login": "greed-106",
+      "starred_at": "2026-07-02T15:51:59Z",
+      "avatar_url": "https://avatars.githubusercontent.com/u/184342661?v=4"
+    },
+    {
+      "login": "centosrhel",
+      "starred_at": "2026-07-03T02:06:45Z",
+      "avatar_url": "https://avatars.githubusercontent.com/u/8177170?v=4"
+    },
+    {
+      "login": "Yicooong",
+      "starred_at": "2026-07-03T03:17:42Z",
+      "avatar_url": "https://avatars.githubusercontent.com/u/54353406?v=4"
     }
   ]
 }
