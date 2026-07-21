@@ -45,7 +45,11 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 
 # 仓库训练依赖（megatron-energon==5.0.0 / transformers==5.7.0 / qwen_vl_utils / timm ...）
 COPY requirements.txt /tmp/requirements.txt
+# NGC 25.04 = Python 3.12：sentencepiece==0.1.98 没有 cp312 预编译 wheel，会回退源码编译并
+# 因构建环境缺 cmake/C++ 依赖而失败。放宽到有 cp312 wheel 的 0.2.0（对 transformers/tokenizer
+# 兼容，纯装 wheel 不编译）。只改临时文件，不动仓库 requirements.txt。
 RUN --mount=type=cache,target=/root/.cache/pip \
+    sed -i 's/^sentencepiece==0\.1\.98/sentencepiece>=0.2.0/' /tmp/requirements.txt && \
     pip install -r /tmp/requirements.txt && rm -f /tmp/requirements.txt
 
 # streaming 在线解码依赖：
