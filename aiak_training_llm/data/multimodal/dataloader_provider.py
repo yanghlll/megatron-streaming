@@ -85,6 +85,12 @@ class EnergonDataloader:
                 features["labels"], (0, paded_length), "constant", self._collator.label_pad_token_id
             )
             features["attn_mask"] = F.pad(features["attn_mask"], (0, paded_length), "constant", True)
+            # Streaming: pad the per-token loss weight with 0.0 (non-supervised).
+            lw = features.get("loss_weight")
+            if lw is not None:
+                if not torch.is_tensor(lw):
+                    lw = torch.as_tensor(lw, dtype=torch.float32)
+                features["loss_weight"] = F.pad(lw, (0, paded_length), "constant", 0.0)
         return features
 
     def __iter__(self):

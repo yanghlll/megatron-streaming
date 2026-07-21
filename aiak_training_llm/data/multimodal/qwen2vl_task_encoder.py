@@ -176,6 +176,32 @@ class Qwen2VLTaskEncoder(TaskEncoder):
         self.min_pixels = args.min_pixels
         self.max_pixels = args.max_pixels
 
+        # Streaming video understanding (per-second interleaved turns, online decode,
+        # per-token loss weighting on </silence>/</response> control tokens).
+        self.streaming = getattr(args, "streaming_video", False)
+        if self.streaming:
+            self.silence_id = self.tokenizer.convert_tokens_to_ids("</silence>")
+            self.response_id = self.tokenizer.convert_tokens_to_ids("</response>")
+            self.stream_video_token_id = self.tokenizer.convert_tokens_to_ids(VIDEO_TOKEN)  # <|video_pad|> sentinel
+            self.stream_vision_start_id = self.tokenizer.convert_tokens_to_ids(VISION_TAGS[0])
+            self.stream_image_pad_id = self.tokenizer.convert_tokens_to_ids(IMAGE_TOKEN)
+            self.stream_vision_end_id = self.tokenizer.convert_tokens_to_ids(VISION_TAGS[1])
+            self.stream_nl_ids = self.tokenizer.tokenize("\n", add_special_tokens=False)
+            self.w_silence_first = getattr(args, "w_silence_first", 1.0)
+            self.w_silence_repeated = getattr(args, "w_silence_repeated", 0.4)
+            self.w_response = getattr(args, "w_response", 1.5)
+            self.stream_fps = getattr(args, "stream_fps", 0.0)
+            # Per-frame token budget: reuse image min/max pixels so decoded frames
+            # are resized consistently on both the decode and patchify sides.
+            vp = getattr(self.processor, "video_processor", None)
+            if vp is not None:
+                vp.min_pixels = self.min_pixels
+                vp.max_pixels = self.max_pixels
+            ip = getattr(self.processor, "image_processor", None)
+            if ip is not None:
+                ip.min_pixels = self.min_pixels
+                ip.max_pixels = self.max_pixels
+
     def _normalize_image_backed_video_placeholders(
         self,
         messages: list[dict[str, str]],
@@ -704,6 +730,175 @@ class Qwen2VLTaskEncoder(TaskEncoder):
             attn_mask=attn_mask,
             total_len=len(input_ids),
             patch_positions=patch_positions,
+        )
+
+    @staticmethod
+    def _adaptive_stream_fps(n_seconds: int) -> int:
+        """ms-swift adaptive fps by duration proxy (n_seconds): >=160->1, >=64->2, else 4."""
+        if n_seconds >= 160:
+            return 1
+        if n_seconds >= 64:
+            return 2
+        return 4
+
+    def _decode_stream_frames(self, video_path, n_seconds, fps, frames_per_sec):
+        """Decode the whole video once at target fps, bucket frames by integer second.
+
+        Frames are fed to the model as IMAGES, matching OV2's video-as-multi-image
+        convention (a single [T_kept, H_p, W_p] grid row). Returns:
+            (bucket_counts[n_seconds], n_per_frame, pixel_values_kept,
+             image_grid_rows[1, 3], patch_positions_kept[·, 3])
+        """
+        vp = self.processor.video_processor
+        saved = (vp.fixed_num_frames, vp.max_frames, vp.target_fps)
+        try:
+            vp.fixed_num_frames = None
+            vp.target_fps = float(fps)
+            vp.max_frames = int(n_seconds * frames_per_sec)
+            out = vp(videos=[video_path], return_tensors="pt")
+        finally:
+            vp.fixed_num_frames, vp.max_frames, vp.target_fps = saved
+
+        grid = out["video_grid_thw"][0]  # [T, H_p, W_p]
+        T, H_p, W_p = int(grid[0]), int(grid[1]), int(grid[2])
+        hw = H_p * W_p
+        sms = int(getattr(self.processor, "spatial_merge_size",
+                          getattr(self.processor.image_processor, "merge_size", 3)))
+        n_per_frame = hw // (sms * sms)
+        frame_seconds = list(out["frame_timestamps"][0])[:T]
+        pv = out["pixel_values_videos"]   # [T*hw, ...]
+        pp = out["patch_positions"]       # [T*hw, 3]
+
+        bucket_counts = [0] * n_seconds
+        keep = []
+        for i in range(T):
+            sec = int(frame_seconds[i])
+            if sec < 0 or sec >= n_seconds:   # drop frames past the annotated window
+                continue
+            bucket_counts[sec] += 1
+            keep.append(i)
+
+        grid_dtype = out["video_grid_thw"].dtype
+        if len(keep) == T:
+            pv_k, pp_k = pv, pp
+        else:
+            row_idx = torch.tensor([j for i in keep for j in range(i * hw, (i + 1) * hw)], dtype=torch.long)
+            pv_k, pp_k = pv[row_idx], pp[row_idx]
+        # OV2 convention (matches process_sft_qa's patch_positions path): a single
+        # [T_kept, H_p, W_p] grid row. The vision encoder splits T into
+        # `frame_windows_size`-frame attention windows internally, so per-frame
+        # [1, H, W] rows would drop the intended cross-frame windowing.
+        grid_rows = torch.tensor([[len(keep), H_p, W_p]], dtype=grid_dtype)
+        # int64 to match the offline patch_positions path and get_batch's
+        # broadcast_data(["patch_positions"], data, torch.int64).
+        pp_k = pp_k.to(torch.int64)
+        return bucket_counts, n_per_frame, pv_k, grid_rows, pp_k
+
+    def encode_streaming_video(self, sample: MultiMixQASample) -> "Qwen2VLImageTaskSample":
+        """Streaming video SFT: online decode + per-second interleave + per-token loss weight.
+
+        Ported from ms-swift `LLavaOneVision2StreamingTemplate`. The sample carries
+        per-second interleaved turns (each user turn ends with one `<|video_pad|>`
+        sentinel) and a `video_path`. We (1) multi-turn-encode messages (assistant-only
+        supervised) while building a per-token `loss_weight`, (2) decode the video at the
+        CLI fps and bucket frames by second, (3) splice each second's per-frame vision
+        block into its sentinel.
+        """
+        assert self.args.training_phase == constants.TrainingPhase.SFT, "streaming only supports sft"
+        messages = [dict(m) for m in sample.messages]
+
+        # 1) Multi-turn encode; build input_ids/labels + per-token loss_weight.
+        encode_pairs = self.chat_template.encode_multiturn(
+            tokenizer=self.tokenizer, messages=messages, system=sample.system,
+        )
+        input_ids, labels, loss_weight = [], [], []
+        prev = None
+        for source_ids, target_ids in encode_pairs:
+            w = [1.0] * len(target_ids)
+            if target_ids and target_ids[0] == self.silence_id:
+                w[0] = self.w_silence_repeated if prev == "silence" else self.w_silence_first
+                prev = "silence"
+            elif target_ids and target_ids[0] == self.response_id:
+                w[0] = self.w_response
+                prev = "response"
+            input_ids += source_ids + target_ids
+            labels += [IGNORE_INDEX] * len(source_ids) + target_ids
+            loss_weight += [0.0] * len(source_ids) + w
+
+        # 2) n_seconds = number of sentinels; pick fps (adaptive when stream_fps<=0).
+        idx_list = [i for i, t in enumerate(input_ids) if t == self.stream_video_token_id]
+        n_seconds = len(idx_list)
+        assert n_seconds > 0, f"no <|video_pad|> sentinel in streaming sample {sample.__key__}"
+        fps = self.stream_fps if self.stream_fps and self.stream_fps > 0 else self._adaptive_stream_fps(n_seconds)
+        frames_per_sec = max(int(fps), 1)
+
+        # 3) Online decode + bucket by second.
+        bucket_counts, n_per_frame, pv_k, grid_rows, pp_k = self._decode_stream_frames(
+            sample.video_path, n_seconds, fps, frames_per_sec)
+        assert len(bucket_counts) == n_seconds
+        if sum(bucket_counts) == 0:
+            skip_malformed_multimodal_sample(
+                sample.__key__, "streaming_no_frames_in_window",
+                f"no decoded frame falls within [0, {n_seconds}) for {sample.video_path}")
+
+        # 4) Splice: replace each sentinel with its second's per-frame vision blocks.
+        block = [self.stream_vision_start_id] + [self.stream_image_pad_id] * n_per_frame + [self.stream_vision_end_id]
+
+        def _bucket_ids(k: int):
+            if k <= 0:
+                return []
+            out = list(block)
+            for _ in range(k - 1):
+                out += self.stream_nl_ids
+                out += block
+            return out
+
+        out_ids, out_labels, out_lw = [], [], []
+        prevp = 0
+        for i, idx in enumerate(idx_list):
+            new_tok = _bucket_ids(bucket_counts[i])
+            out_ids += input_ids[prevp:idx]
+            out_ids += new_tok
+            out_labels += labels[prevp:idx]
+            out_labels += [IGNORE_INDEX] * len(new_tok)
+            out_lw += loss_weight[prevp:idx]
+            out_lw += [0.0] * len(new_tok)
+            prevp = idx + 1
+        out_ids += input_ids[prevp:]
+        out_labels += labels[prevp:]
+        out_lw += loss_weight[prevp:]
+
+        assert self.stream_video_token_id not in out_ids, "sentinel not fully replaced"
+        n_image_pad = sum(1 for t in out_ids if t == self.stream_image_pad_id)
+        expect = sum(bucket_counts) * n_per_frame
+        assert n_image_pad == expect, f"<|image_pad|> {n_image_pad} != expected {expect}"
+
+        input_ids_t = torch.tensor(out_ids, dtype=torch.long)
+        labels_t = torch.tensor(out_labels, dtype=torch.long)
+        loss_weight_t = torch.tensor(out_lw, dtype=torch.float32)
+        attn_mask = torch.zeros_like(input_ids_t).bool()
+
+        if self.args.enable_discard_sample and len(input_ids_t) > self.args.seq_length:
+            skip_malformed_multimodal_sample(
+                sample.__key__, "input_length_exceeds_seq_length",
+                f"input length {len(input_ids_t)} exceeds seq_length={self.args.seq_length}")
+
+        return Qwen2VLImageTaskSample(
+            __key__=sample.__key__,
+            __restore_key__=sample.__restore_key__,
+            __subflavor__=None,
+            __subflavors__=sample.__subflavors__,
+            imgs=[pv_k],
+            image_grid_thw=grid_rows,
+            pixel_values_videos=None,
+            video_grid_thw=None,
+            num_tiles=[len(grid_rows)],
+            tokens=input_ids_t,
+            labels=labels_t,
+            attn_mask=attn_mask,
+            total_len=len(input_ids_t),
+            patch_positions=[pp_k],
+            loss_weight=loss_weight_t,
         )
 
     def process_samples_grid(self, samples):

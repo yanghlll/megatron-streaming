@@ -188,6 +188,21 @@ def _add_extra_sft_args(parser: argparse.ArgumentParser):
                        default=None,
                        help='The template to apply to instruction data.')
 
+    # Streaming video understanding (JoyAI-style): per-second interleaved turns with
+    # </silence>/</response> control tokens, online video decode, per-token loss weight.
+    group.add_argument('--streaming-video', action='store_true',
+                       help='Enable streaming video understanding: per-second interleaved turns, '
+                            'online decode, and per-token loss weighting on control tokens.')
+    group.add_argument('--stream-fps', type=float, default=0.0,
+                       help='Decode fps for streaming video. 0 = adaptive by duration '
+                            '(>=160s->1, >=64s->2, else 4). Only used with --streaming-video.')
+    group.add_argument('--w-silence-first', type=float, default=1.0,
+                       help='Loss weight for the first </silence> control token of a silence run.')
+    group.add_argument('--w-silence-repeated', type=float, default=0.4,
+                       help='Loss weight for repeated </silence> control tokens.')
+    group.add_argument('--w-response', type=float, default=1.5,
+                       help='Loss weight for the </response> control token.')
+
     group.add_argument('--sft-dataset-config',
                        type=str,
                        default=None,

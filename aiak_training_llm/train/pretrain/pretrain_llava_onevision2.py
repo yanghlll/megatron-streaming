@@ -112,6 +112,12 @@ def get_batch(data_iterator):
     cu_lengths = tensor_parallel.broadcast_data(["cu_lengths"], data, torch.int32)["cu_lengths"]
     max_lengths = tensor_parallel.broadcast_data(["max_lengths"], data, torch.int32)["max_lengths"]
 
+    # Streaming: per-token loss weight. Gated on the launch-wide flag so every TP
+    # rank agrees on whether to broadcast (all-or-nothing per run).
+    loss_weight = None
+    if getattr(args, "streaming_video", False):
+        loss_weight = tensor_parallel.broadcast_data(["loss_weight"], data, torch.float32)["loss_weight"]
+
     has_video = video_token_id in tokens
     has_image = image_token_id in tokens
     thw = None
@@ -149,6 +155,9 @@ def get_batch(data_iterator):
 
     labels = torch.roll(labels, shifts=-1, dims=1)
     loss_mask = (labels != -100).long()
+    if loss_weight is not None:
+        # Align the weight with the -1 next-token shift applied to labels.
+        loss_weight = torch.roll(loss_weight, shifts=-1, dims=1)
 
     if cu_lengths.shape == torch.Size([1, 1]):
         for i in range(attn_mask.shape[0]):
@@ -188,6 +197,8 @@ def get_batch(data_iterator):
             tokens = F.pad(tokens, (0, pad_size), value=pad_token_id)
             labels = F.pad(labels, (0, pad_size), value=-100)
             loss_mask = F.pad(loss_mask, (0, pad_size))
+            if loss_weight is not None:
+                loss_weight = F.pad(loss_weight, (0, pad_size))
             if packed_seq_params is not None:
                 # Append a dummy sequence entry so the packed-sequence attention
                 # kernel covers every element in the padded tensor.
@@ -209,6 +220,8 @@ def get_batch(data_iterator):
     if args.context_parallel_size > 1:
         labels = get_inputs_on_this_cp_rank(labels.transpose(0, 1)).transpose(0, 1)
         loss_mask = get_inputs_on_this_cp_rank(loss_mask.transpose(0, 1)).transpose(0, 1)
+        if loss_weight is not None:
+            loss_weight = get_inputs_on_this_cp_rank(loss_weight.transpose(0, 1)).transpose(0, 1)
 
     # TODO
     attn_mask_type = AttnMaskType.causal
@@ -227,10 +240,11 @@ def get_batch(data_iterator):
         attn_mask_type,
         packed_seq_params,
         patch_positions,
+        loss_weight,
     )
 
 
-def loss_func(loss_mask: torch.Tensor, output_tensor: torch.Tensor):
+def loss_func(loss_mask: torch.Tensor, loss_weight, output_tensor: torch.Tensor):
     """Loss function.
 
     Args:
@@ -248,7 +262,13 @@ def loss_func(loss_mask: torch.Tensor, output_tensor: torch.Tensor):
     loss_mask = loss_mask.view(-1).float()
 
     total_tokens = loss_mask.sum()
-    loss = torch.cat([torch.sum(losses.view(-1) * loss_mask).view(1), total_tokens.view(1)])
+    if loss_weight is not None:
+        # Streaming: weighted CE. Numerator = Σ_j w_j·mask_j·CE_j; denominator stays
+        # the count of supervised tokens (matches ms-swift's joy_streaming normalization).
+        w = loss_weight.view(-1).float()
+        loss = torch.cat([torch.sum(losses.view(-1) * loss_mask * w).view(1), total_tokens.view(1)])
+    else:
+        loss = torch.cat([torch.sum(losses.view(-1) * loss_mask).view(1), total_tokens.view(1)])
 
     if args.context_parallel_size > 1:
         torch.distributed.all_reduce(loss, group=mpu.get_context_parallel_group())
@@ -308,6 +328,7 @@ def forward_step(data_iterator, model):
             attn_mask_type,
             packed_seq_params,
             patch_positions,
+            loss_weight,
         ) = get_batch(data_iterator)
 
     timers("batch-generator").stop()
@@ -357,7 +378,7 @@ def forward_step(data_iterator, model):
                 flush=True,
             )
 
-    return output_tensor, partial(loss_func, loss_mask)
+    return output_tensor, partial(loss_func, loss_mask, loss_weight)
 
 
 def train_valid_test_dataset_provider(train_val_test_num_samples):

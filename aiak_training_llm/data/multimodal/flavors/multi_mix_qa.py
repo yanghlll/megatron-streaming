@@ -18,6 +18,10 @@ class MultiMixQASample(Sample):
     #: The video data containing the image and audio info.
     video: List[VideoData] = None
 
+    #: Streaming: absolute path(s) to the source video, decoded online at train
+    #: time (no frames stored in the shard). Set by the streaming sample_loader.
+    video_path: Optional[str] = None
+
     #: The input image tensor in the shape (C, H, W)
     image: List[torch.Tensor] = None
 

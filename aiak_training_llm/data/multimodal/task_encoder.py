@@ -52,6 +52,9 @@ class ImageTaskSample(Sample):
     imgs: List[torch.Tensor] = None
     pixel_values_videos: List[torch.Tensor] = None
     patch_positions: Optional[List[torch.Tensor]] = None
+    # Streaming: per-token loss weight aligned with `labels` (float32). None for
+    # non-streaming samples (falls back to the standard binary loss_mask).
+    loss_weight: torch.Tensor = None
 
 
 @dataclass
@@ -78,6 +81,8 @@ class ImageTaskSamplePacked(Sample):
     imgs: List[torch.Tensor] = None  # Input images
     pixel_values_videos: List[torch.Tensor] = None
     patch_positions: Optional[List[torch.Tensor]] = None
+    # Streaming: per-token loss weight packed into a single tensor (seq_len,).
+    loss_weight: torch.Tensor = None
 
 
 # Typing for the resulting batch data after encode_batch()
@@ -104,6 +109,8 @@ class ImageTaskBatchPacked(Batch):
     imgs: torch.Tensor = None  # All image tiles stacked into a single tensor (num_tiles, C, H, W)
     pixel_values_videos: torch.Tensor = None
     patch_positions: Optional[torch.Tensor] = None
+    # Streaming: per-token loss weight padded to (N, seq_len). None => standard loss.
+    loss_weight: torch.Tensor = None
 
 
 # Based on https://github.com/hiyouga/LLaMA-Factory/
@@ -179,6 +186,11 @@ class TaskEncoder(DefaultTaskEncoder[OCRSample, OCRSample, ImageTaskBatchPacked,
         #     yield self.encode_captioning(sample)
         # elif isinstance(sample, VQASample):
         #     yield self.encode_vaq(sample)
+        # Streaming video understanding: sample carries a video path (decoded
+        # online) and per-second interleaved turns with <|video_pad|> sentinels.
+        if getattr(self, "streaming", False) and getattr(sample, "video_path", None):
+            yield self.encode_streaming_video(sample)
+            return
         if isinstance(sample, MultiVidQASample):
             yield self.encode_multi_vid_qa(sample)
         elif isinstance(sample, MultiMixQASample):
@@ -341,6 +353,12 @@ class TaskEncoder(DefaultTaskEncoder[OCRSample, OCRSample, ImageTaskBatchPacked,
         labels = np.full((len(samples), max_seq_len), IGNORE_INDEX, dtype=np.int64)
         attn_masks = np.full((len(samples), max_seq_len), True, dtype=bool)
 
+        # Streaming: per-token loss weight. Build only if at least one sample
+        # carries it (pad value 0.0 = non-supervised); otherwise leave as None so
+        # the loss path falls back to the standard binary loss_mask.
+        has_loss_weight = any(getattr(s, "loss_weight", None) is not None for s in samples)
+        loss_weights = np.zeros((len(samples), max_seq_len), dtype=np.float32) if has_loss_weight else None
+
         for i, s in enumerate(samples):
             # If the sample/target length exceeds the target sequence length, then truncate.
             text_len = min(max_seq_len, len(s.tokens))
@@ -349,6 +367,9 @@ class TaskEncoder(DefaultTaskEncoder[OCRSample, OCRSample, ImageTaskBatchPacked,
             tokens[i, :text_len] = s.tokens[:text_len]
             labels[i, :target_len] = s.labels[:target_len]
             attn_masks[i, :text_len] = s.attn_mask[:text_len]
+            if loss_weights is not None and getattr(s, "loss_weight", None) is not None:
+                lw_len = min(max_seq_len, len(s.loss_weight))
+                loss_weights[i, :lw_len] = np.asarray(s.loss_weight[:lw_len], dtype=np.float32)
 
         num_tiles = [n for s in samples for n in s.num_tiles]
         if len(num_tiles) > 0:
@@ -381,6 +402,9 @@ class TaskEncoder(DefaultTaskEncoder[OCRSample, OCRSample, ImageTaskBatchPacked,
             cu_lengths=cu_lengths,
             max_lengths=max_lengths,
             patch_positions=patch_positions,
+            # numpy (like `labels`) so energon's collation converts it to a tensor
+            # on the same path; EnergonDataloader then F.pad's it.
+            loss_weight=loss_weights,
         )
 
     def encode_batch(self, batch: ImageTaskBatchPacked) -> dict:
@@ -424,6 +448,8 @@ class TaskEncoder(DefaultTaskEncoder[OCRSample, OCRSample, ImageTaskBatchPacked,
         packed_imgs = []
         packed_videos = []
         packed_patch_positions = []
+        packed_loss_weights = []
+        any_loss_weight = any(getattr(s, "loss_weight", None) is not None for s in samples)
 
         current_length = 0
         max_length = 0
@@ -447,6 +473,12 @@ class TaskEncoder(DefaultTaskEncoder[OCRSample, OCRSample, ImageTaskBatchPacked,
             packed_tokens.append(sample.tokens)
             packed_labels.append(sample.labels)
             packed_masks.append(sample.attn_mask)
+            if any_loss_weight:
+                lw = getattr(sample, "loss_weight", None)
+                if lw is None:
+                    # Fallback: weight 1.0 on supervised positions, 0.0 elsewhere.
+                    lw = (sample.labels != IGNORE_INDEX).to(torch.float32)
+                packed_loss_weights.append(lw)
 
             # Add the images
             if sample.imgs is not None:
@@ -462,6 +494,7 @@ class TaskEncoder(DefaultTaskEncoder[OCRSample, OCRSample, ImageTaskBatchPacked,
         packed_tokens = torch.cat(packed_tokens, dim=0)
         packed_labels = torch.cat(packed_labels, dim=0)
         packed_masks = torch.cat(packed_masks, dim=0)
+        packed_loss_weight = torch.cat(packed_loss_weights, dim=0) if any_loss_weight else None
 
         return ImageTaskSamplePacked(
             __key__=",".join([s.__key__ for s in samples]),
@@ -477,6 +510,7 @@ class TaskEncoder(DefaultTaskEncoder[OCRSample, OCRSample, ImageTaskBatchPacked,
             max_length=max_length,
             num_tiles=[n for s in samples for n in s.num_tiles],
             patch_positions=packed_patch_positions if packed_patch_positions else None,
+            loss_weight=packed_loss_weight,
         )
 
 
