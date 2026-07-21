@@ -1,0 +1,32 @@
+# docker compose 路径（start.sh 在“有 compose v2 且未用 EXTRA_MOUNT”时走这里）。
+# 需要额外挂载数据/权重目录：在 volumes 里加一行 `- /你的路径:/你的路径`，
+# 或用 `EXTRA_MOUNT=/data,/ckpt bash docker/start.sh` 走原生 docker run 路径。
+services:
+  train:
+    build:
+      context: ..                       # 仓库根（Dockerfile 里 COPY requirements.txt 需要它）
+      dockerfile: docker/Dockerfile
+    image: lov2-stream:ngc25.04          # 与 start.sh 的 IMAGE 保持一致
+    container_name: lov2-stream          # 与 start.sh 的 NAME 保持一致
+    ipc: host
+    network_mode: host
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    restart: unless-stopped
+    environment:
+      - HF_HOME=/root/.cache/huggingface
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    volumes:
+      - ..:/workspace/LLaVA-OneVision-2
+      - ../workdir:/workspace/workdir
+      - ${HOME}/.cache/huggingface:/root/.cache/huggingface
+    working_dir: /workspace/LLaVA-OneVision-2
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command: ["sleep", "infinity"]

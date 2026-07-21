@@ -60,6 +60,15 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # NGC 自带 nvidia-modelopt 会干扰 from_pretrained，卸掉（仓库官方 dockerfile 同样处理）
 RUN pip uninstall -y nvidia-modelopt || true
 
+# 运行期环境：设进镜像 ENV，这样 `docker exec -it lov2-stream bash` 进来的 shell 也直接
+# 带上 AIAK 路径 / PYTHONPATH（exec 不走 entrypoint，只有镜像 ENV 会被继承）。
+# 仓库固定挂在 /workspace/LLaVA-OneVision-2（见 start.sh / docker-compose.yml）。
+ENV AIAK_TRAINING_PATH=/workspace/LLaVA-OneVision-2 \
+    AIAK_MAGATRON_PATH=/workspace/LLaVA-OneVision-2/aiak_megatron \
+    PYTHONPATH=/workspace/LLaVA-OneVision-2/aiak_megatron:/workspace/LLaVA-OneVision-2 \
+    HF_HOME=/root/.cache/huggingface \
+    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 

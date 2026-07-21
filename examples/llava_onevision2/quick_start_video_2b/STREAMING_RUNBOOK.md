@@ -20,35 +20,24 @@
 
 ---
 
-## 1. 容器：补 decord + ffmpeg（在线解码 + 转换脚本必需）
+## 1. 起容器（环境已由 `docker/` 提供，含 decord / ffmpeg / opencv）
 
-`requirements.txt` 没有 decord/opencv/ffmpeg，而 streaming 在线解码走 OV2 的
-`video_processing_llava_onevision2.py`（decord 首选、cv2 兜底），转换脚本读时长用 ffprobe。
-建议在镜像里 bake（追加到 `dockerfile` 末尾再 build）：
-
-```dockerfile
-RUN pip install --no-cache-dir decord && \
-    apt-get update && apt-get install -y --no-install-recommends ffmpeg && \
-    rm -rf /var/lib/apt/lists/*
-```
-
+一键（每台机都这样起，详见 [`../../../docker/README.md`](../../../docker/README.md)）：
 ```bash
-docker build -t lov2-stream -f dockerfile .
+cd /shared/LLaVA-OneVision-2          # 你 clone 的仓库
+EXTRA_MOUNT=/shared bash docker/start.sh   # /shared = 数据+权重根，同路径挂进容器
 ```
+起好即进入容器 `lov2-stream`：代码在 `/workspace/LLaVA-OneVision-2`（= `$AIAK_TRAINING_PATH`，
+镜像 ENV 已设好 `PYTHONPATH`）。下面 2~5 步都在容器内跑。
+（再次进入：`docker exec -it lov2-stream bash`）
 
 ---
 
 ## 2. HF → mcore 转换（一次性，TP=1 PP=1，与训练一致）
 
-在**任一台**机的容器里（单卡即可）：
+容器内（单卡即可）：
 
 ```bash
-docker run --gpus '"device=0"' --rm -it --ipc host --shm-size 64g \
-  -v /shared:/shared lov2-stream bash
-
-# 容器内：
-export AIAK_TRAINING_PATH=/shared/LLaVA-OneVision-2
-export AIAK_MAGATRON_PATH=$AIAK_TRAINING_PATH/aiak_megatron
 cd $AIAK_TRAINING_PATH
 bash examples/llava_onevision2/convert/convert_2b_hf_to_mcore.sh \
     /shared/ckpt/LLaVA-OneVision-2-2B-hf \
@@ -89,7 +78,7 @@ python -c "from transformers import AutoProcessor as P; p=P.from_pretrained('$TO
 
 ---
 
-## 5. 两机启动（docker run + torchrun）
+## 5. 两机启动（start.sh 起容器 + torchrun）
 
 **编辑 `instruct_video_streaming.sh` 顶部的 `list_ip`**，填两台机的 IP（顺序即 node rank，node0 是 master）：
 ```bash
@@ -100,18 +89,12 @@ declare -a list_ip=(
 ```
 `GPUS_PER_NODE=8` 已是默认，无需改。
 
-在**每台机**上各起一个容器并跑**同一条命令**（脚本按本机 IP 自动判定 node rank）：
+在**每台机**上 `EXTRA_MOUNT=/shared bash docker/start.sh` 起容器（已 `--network host`），
+然后在容器内跑**同一条命令**（脚本按本机 IP 自动判定 node rank）：
 ```bash
-docker run --gpus all --rm -it --network host --ipc host --shm-size 128g \
-  -e NCCL_SOCKET_IFNAME=<机间网卡名,如 bond0/eth0>  \
-  -e MASTER_PORT=26000 \
-  -v /shared:/shared \
-  -v /shared/data/videos:/shared/data/videos \
-  lov2-stream bash
-
 # 容器内（两台都执行）：
-export AIAK_TRAINING_PATH=/shared/LLaVA-OneVision-2
-export AIAK_MAGATRON_PATH=$AIAK_TRAINING_PATH/aiak_megatron
+export NCCL_SOCKET_IFNAME=<机间网卡名,如 bond0/eth0>    # 机间 NCCL 走哪张网卡
+export MASTER_PORT=26000
 export DATA_PATH=/shared/data/joy_streaming_webdataset
 export TOKENIZER_PATH=/shared/ckpt/ov2_preprocessor
 export CHECKPOINT_PATH=/shared/ckpt/lov2_2b_mcore_tp1pp1
