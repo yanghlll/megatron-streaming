@@ -22,6 +22,11 @@ class MultiMixQASample(Sample):
     #: time (no frames stored in the shard). Set by the streaming sample_loader.
     video_path: Optional[str] = None
 
+    #: Streaming (offline-frame mode): number of pre-extracted frames per second,
+    #: length == number of <|video_pad|> sentinels; sum == len(image). When set,
+    #: the streaming encoder reads frames from `image` instead of decoding a video.
+    bucket_counts: Optional[List[int]] = None
+
     #: The input image tensor in the shape (C, H, W)
     image: List[torch.Tensor] = None
 

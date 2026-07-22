@@ -63,8 +63,18 @@ python tools/data_preprocess/convert_streaming_to_webdataset.py \
 `--jsonl` 支持三种输入：**单个 `.jsonl`**、**目录**（递归 `**/*.jsonl`，含子目录）、或**通配符**
 （如 `'/shared/data/**/*.jsonl'`）。目录/子目录会自动全部合并处理。
 
-只读时长、不抽帧，快。产出 energon WebDataset（视频按路径引用），即 `DATA_PATH`。
-改 fps 无需重转数据（fps 是训练时参数）。
+**两种模式（训练侧自动识别，都用同一个 `--streaming-video`）：**
+- **在线解码（默认，上面的命令）**：产出的 WebDataset 只存视频路径，**不抽帧、省磁盘、fps 训练时可调**（`STREAM_FPS`）。训练每步在线解码（依赖 decord/cv2）。
+- **离线抽帧**：加 `--extract_frames --stream_fps 2 [--frame_max_side 448] --num_workers 32`。转换时就把帧解码好存进 shard（含每秒 `bucket_counts`），**训练读帧、不再在线解码**（更稳、每步更快、不依赖 decord）。代价：一次性抽帧 + 占磁盘；**fps 在抽帧时固定**（训练时 `STREAM_FPS` 对离线数据无效）。`--frame_max_side` 可下采样帧省磁盘。
+
+```bash
+# 离线抽帧示例
+python tools/data_preprocess/convert_streaming_to_webdataset.py \
+  --jsonl <标注目录/或.jsonl> --output_dir <WebDataset输出> --video_root <视频目录> \
+  --max_duration 230 --tail_margin 10 --num_workers 32 \
+  --extract_frames --stream_fps 2 --frame_max_side 448
+```
+两种产出都叫 `DATA_PATH`，训练脚本无需改（`encode_streaming_video` 有帧就走离线、没帧就在线解码）。
 
 ---
 

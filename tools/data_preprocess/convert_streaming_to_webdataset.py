@@ -93,8 +93,43 @@ def part_filter(part: str) -> bool:
 """
 
 
-def write_config(output_dir: str) -> None:
-    """Write minimal Energon config."""
+def sample_loader_template_offline() -> str:
+    """sample_loader.py for offline-frame streaming (frames stored in the shard)."""
+    return """# Auto-generated sample loader for streaming video (offline pre-extracted frames).
+
+
+def sample_loader(sample: dict) -> dict:
+	data = sample['json']
+
+	# energon decodes img_*.jpg entries to PIL (image_decode="pil")
+	images = [sample.get(name) for name in data.get('image_keys', [])]
+
+	system = None
+	messages = []
+	for msg in data.get('messages', []):
+		if msg.get('role') == 'system':
+			system = msg.get('content')
+			continue
+		messages.append({'role': msg.get('role'), 'content': msg.get('content')})
+
+	return dict(
+		__key__=sample['__key__'],
+		__restore_key__=sample['__restore_key__'],
+		messages=messages,
+		system=system,
+		image=images if len(images) > 0 else None,
+		bucket_counts=data.get('bucket_counts'),
+		fps=data.get('fps'),
+	)
+
+
+def part_filter(part: str) -> bool:
+	return True
+"""
+
+
+def write_config(output_dir: str, offline: bool = False) -> None:
+    """Write minimal Energon config (online video-path loader or offline-frame loader)."""
     meta_dir = Path(output_dir) / MAIN_FOLDER_NAME
     meta_dir.mkdir(parents=True, exist_ok=True)
 
@@ -109,7 +144,7 @@ def write_config(output_dir: str) -> None:
     with (meta_dir / "dataset.yaml").open("w", encoding="utf-8") as f:
         yaml.dump(dataset_definition, f, sort_keys=False)
     with (meta_dir / "sample_loader.py").open("w", encoding="utf-8") as f:
-        f.write(sample_loader_template())
+        f.write(sample_loader_template_offline() if offline else sample_loader_template())
 
     if ENERGON_AVAILABLE:
         path = EPath(output_dir).absolute()
@@ -302,18 +337,103 @@ def iter_jsonl(path: str) -> Iterable[dict]:
             yield json.loads(line)
 
 
-def _build_sample(entry: dict, idx: int, sample_prefix: str, video_root, max_duration, tail_margin):
-    """Build one WebDataset sample dict, or None to skip."""
+def _extract_frames(video_path, n_seconds, fps, frame_max_side=0):
+    """Decode `video_path` at `fps`, bucket frames by integer second, keep [0, n_seconds).
+
+    Returns (jpg_bytes_list, bucket_counts) where frames are in temporal order and
+    bucket_counts[sec] = #frames stored for that second (sum == len(jpg_bytes_list)).
+    decord preferred, OpenCV fallback. jpg_bytes are what gets stored in the shard.
+    """
+    import io
+
+    import numpy as np
+    from PIL import Image
+
+    sampled = []  # list of (sec:int, rgb ndarray)
+    try:
+        import decord
+
+        vr = decord.VideoReader(video_path)
+        src_fps = float(vr.get_avg_fps() or 30.0)
+        total = len(vr)
+        duration = total / src_fps if src_fps > 0 else float(n_seconds)
+        horizon = min(duration, float(n_seconds)) if duration > 0 else float(n_seconds)
+        ts = np.arange(0.0, horizon, 1.0 / fps)
+        idxs = np.clip(np.floor(ts * src_fps).astype(np.int64), 0, max(total - 1, 0))
+        batch = vr.get_batch(idxs.tolist()).asnumpy()  # [K,H,W,3] RGB
+        sampled = [(int(ts[k]), batch[k]) for k in range(len(idxs))]
+    except Exception:
+        try:
+            import cv2
+
+            cap = cv2.VideoCapture(video_path)
+            src_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+            total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            duration = total / src_fps if src_fps > 0 else float(n_seconds)
+            horizon = min(duration, float(n_seconds)) if duration > 0 else float(n_seconds)
+            for t in np.arange(0.0, horizon, 1.0 / fps):
+                cap.set(cv2.CAP_PROP_POS_FRAMES, int(t * src_fps))
+                ok, fr = cap.read()
+                if ok:
+                    sampled.append((int(t), cv2.cvtColor(fr, cv2.COLOR_BGR2RGB)))
+            cap.release()
+        except Exception:
+            return [], [0] * n_seconds
+
+    bucket_counts = [0] * n_seconds
+    jpgs = []
+    for sec, arr in sampled:
+        if sec < 0 or sec >= n_seconds:
+            continue
+        img = Image.fromarray(arr)
+        if frame_max_side and max(img.size) > frame_max_side:
+            img.thumbnail((frame_max_side, frame_max_side))
+        buf = io.BytesIO()
+        img.convert("RGB").save(buf, format="JPEG", quality=90)
+        jpgs.append(buf.getvalue())
+        bucket_counts[sec] += 1
+    return jpgs, bucket_counts
+
+
+def _build_sample(entry, idx, sample_prefix, video_root, max_duration, tail_margin, xopts):
+    """Build one WebDataset sample dict, or None to skip.
+
+    xopts = (extract_frames: bool, stream_fps: float, frame_max_side: int).
+    """
     processed = preprocess_row(entry, video_root, max_duration, tail_margin)
     if processed is None:
         return None
     sample_id = entry.get("id") or entry.get("video_name") or f"{sample_prefix}{idx}"
     sample_id = str(sample_id).replace(".", "_").replace("/", "_")
-    payload = {"messages": processed["messages"], "video_path": processed["video_path"]}
-    return {
-        "__key__": str(sample_id),
-        "json": json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+    messages = processed["messages"]
+    video_path = processed["video_path"]
+
+    extract_frames, stream_fps, frame_max_side = xopts
+    if not extract_frames:
+        payload = {"messages": messages, "video_path": video_path}
+        return {"__key__": str(sample_id), "json": json.dumps(payload, ensure_ascii=False).encode("utf-8")}
+
+    # offline mode: extract frames now, store them in the shard + bucket_counts.
+    n_seconds = sum(m.get("content", "").count(STREAM_FRAME_TAG) for m in messages)
+    fps = stream_fps if stream_fps and stream_fps > 0 else _adaptive_fps(float(n_seconds))
+    jpgs, bucket_counts = _extract_frames(video_path, n_seconds, fps, frame_max_side)
+    if sum(bucket_counts) == 0:
+        _warn_once("extract_no_frames", f"extracted 0 frames in [0,{n_seconds}): {video_path}")
+        return None
+    sample = {"__key__": str(sample_id)}
+    image_keys = []
+    for i, b in enumerate(jpgs):
+        key = f"img_{i:06d}.jpg"
+        sample[key] = b
+        image_keys.append(key)
+    payload = {
+        "messages": messages,
+        "image_keys": image_keys,
+        "bucket_counts": bucket_counts,
+        "fps": fps,
     }
+    sample["json"] = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    return sample
 
 
 _COUNTER = None
@@ -327,7 +447,7 @@ def _init_worker(counter, kept) -> None:
 
 
 def _process_chunk(src_files, tar_pattern, maxcount, maxsize, sample_prefix, worker_id,
-                   video_root, max_duration, tail_margin):
+                   video_root, max_duration, tail_margin, xopts):
     """Process one or more source jsonl files into a shard set (tar_pattern)."""
     if isinstance(src_files, str):
         src_files = [src_files]
@@ -337,7 +457,7 @@ def _process_chunk(src_files, tar_pattern, maxcount, maxsize, sample_prefix, wor
         idx = 0
         for src in src_files:
             for entry in iter_jsonl(src):
-                sample = _build_sample(entry, idx, sample_prefix, video_root, max_duration, tail_margin)
+                sample = _build_sample(entry, idx, sample_prefix, video_root, max_duration, tail_margin, xopts)
                 idx += 1
                 count += 1
                 if sample is not None:
@@ -421,10 +541,13 @@ def _split_jsonl(files: list, num_workers: int, tmp_dir: str):
 
 
 def convert(input_path, output_dir, maxcount, maxsize, num_workers, keep_chunks,
-            video_root, max_duration, tail_margin):
+            video_root, max_duration, tail_margin, extract_frames=False,
+            stream_fps=0.0, frame_max_side=0):
     files = collect_jsonl_paths(input_path)
-    print(f"[collect] {len(files)} jsonl file(s) under {input_path}")
+    mode = "OFFLINE frames (decoded now, stored in shard)" if extract_frames else "ONLINE (video path)"
+    print(f"[collect] {len(files)} jsonl file(s) under {input_path}  |  mode: {mode}")
     os.makedirs(output_dir, exist_ok=True)
+    xopts = (extract_frames, stream_fps, frame_max_side)
 
     if num_workers <= 1:
         tar_pattern = os.path.join(output_dir, "instruct_%06d.tar")
@@ -434,7 +557,7 @@ def convert(input_path, output_dir, maxcount, maxsize, num_workers, keep_chunks,
         with tqdm(total=_count_lines(files)) as pbar:
             _, count, n_kept = _process_chunk(
                 files, tar_pattern, maxcount, maxsize, "sample_", 0,
-                video_root, max_duration, tail_margin)
+                video_root, max_duration, tail_margin, xopts)
             pbar.n = count
             pbar.refresh()
         print(f"total={count} kept={n_kept} skipped={count - n_kept}")
@@ -452,7 +575,7 @@ def convert(input_path, output_dir, maxcount, maxsize, num_workers, keep_chunks,
                 tar_pattern = os.path.join(output_dir, f"instruct_{worker_id:02d}_%06d.tar")
                 args_list.append(([chunk_path], tar_pattern, maxcount, maxsize,
                                   f"sample_{worker_id:02d}_", worker_id,
-                                  video_root, max_duration, tail_margin))
+                                  video_root, max_duration, tail_margin, xopts))
             results_async = pool.starmap_async(_process_chunk, args_list)
             with tqdm(total=total_lines) as pbar:
                 while not results_async.ready():
@@ -471,7 +594,7 @@ def convert(input_path, output_dir, maxcount, maxsize, num_workers, keep_chunks,
         if not keep_chunks:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
-    write_config(output_dir)
+    write_config(output_dir, offline=extract_frames)
 
 
 def parse_args() -> argparse.Namespace:
@@ -489,6 +612,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--maxsize", type=int, default=3_000_000_000, help="Max shard size in bytes")
     p.add_argument("--num_workers", type=int, default=os.cpu_count() or 1)
     p.add_argument("--keep_chunks", action="store_true")
+    # offline-frame mode: decode + store frames now; training reads frames, no online decode.
+    p.add_argument("--extract_frames", action="store_true",
+                   help="Offline mode: decode videos now and store frames in the shard "
+                        "(+ per-second bucket_counts). Training reads frames, no online decode.")
+    p.add_argument("--stream_fps", type=float, default=0.0,
+                   help="Extraction fps for --extract_frames. 0 = adaptive by duration "
+                        "(>=160s->1, >=64s->2, else 4).")
+    p.add_argument("--frame_max_side", type=int, default=0,
+                   help="Optional: downscale extracted frames so max(H,W)<=this (0=off) to save disk.")
     return p.parse_args()
 
 
@@ -504,6 +636,9 @@ def main() -> None:
         video_root=args.video_root,
         max_duration=args.max_duration,
         tail_margin=args.tail_margin,
+        extract_frames=args.extract_frames,
+        stream_fps=args.stream_fps,
+        frame_max_side=args.frame_max_side,
     )
 
 

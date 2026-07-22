@@ -186,9 +186,12 @@ class TaskEncoder(DefaultTaskEncoder[OCRSample, OCRSample, ImageTaskBatchPacked,
         #     yield self.encode_captioning(sample)
         # elif isinstance(sample, VQASample):
         #     yield self.encode_vaq(sample)
-        # Streaming video understanding: sample carries a video path (decoded
-        # online) and per-second interleaved turns with <|video_pad|> sentinels.
-        if getattr(self, "streaming", False) and getattr(sample, "video_path", None):
+        # Streaming video understanding: per-second interleaved turns with <|video_pad|>
+        # sentinels. Either a video path (decoded online) or pre-extracted frames +
+        # bucket_counts (offline-frame mode).
+        if getattr(self, "streaming", False) and (
+            getattr(sample, "video_path", None) or getattr(sample, "bucket_counts", None) is not None
+        ):
             yield self.encode_streaming_video(sample)
             return
         if isinstance(sample, MultiVidQASample):

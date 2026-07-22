@@ -794,6 +794,39 @@ class Qwen2VLTaskEncoder(TaskEncoder):
         pp_k = pp_k.to(torch.int64)
         return bucket_counts, n_per_frame, pv_k, grid_rows, pp_k
 
+    def _load_stream_frames_offline(self, frames_pil, bucket_counts):
+        """Offline: run pre-extracted frames through the image processor — NO video decode.
+
+        `frames_pil` are PIL frames in temporal order; `bucket_counts[sec]` = #frames in
+        second `sec` (sum == len(frames_pil)). Mirrors _decode_stream_frames' return:
+            (bucket_counts, n_per_frame, pixel_values, image_grid_rows[1,3], patch_positions[·,3])
+        Frames are fed as IMAGES (single [T,H,W] grid row) to preserve the vision encoder's
+        frame-windowed attention; patch_positions carry the per-frame index as the t axis.
+        """
+        frames_pil = list(frames_pil)
+        n = len(frames_pil)
+        assert n == sum(bucket_counts), f"#frames {n} != sum(bucket_counts) {sum(bucket_counts)}"
+        ip = self.processor.image_processor
+        data = ip(images=frames_pil, return_tensors="pt")
+        pixel_values = data["pixel_values"]
+        image_grid_thw = data["image_grid_thw"]  # [n, 3], each row [1, H_p, W_p]
+        if not (torch.all(image_grid_thw[:, 1] == image_grid_thw[0, 1])
+                and torch.all(image_grid_thw[:, 2] == image_grid_thw[0, 2])):
+            raise RuntimeError(f"frames yielded inconsistent (H,W): {image_grid_thw.tolist()}")
+        H_p, W_p = int(image_grid_thw[0, 1]), int(image_grid_thw[0, 2])
+        sms = int(getattr(self.processor, "spatial_merge_size",
+                          getattr(ip, "merge_size", 3)))
+        n_per_frame = (H_p * W_p) // (sms * sms)
+        # patch_positions: t = frame index, row-major (t,h,w) then 2x2/3x3 block layout,
+        # matching process_sft_qa's patch_positions handling.
+        t = torch.arange(n, dtype=torch.int64).repeat_interleave(H_p * W_p)
+        h = torch.arange(H_p, dtype=torch.int64).repeat_interleave(W_p).repeat(n)
+        w = torch.arange(W_p, dtype=torch.int64).repeat(H_p).repeat(n)
+        pp = torch.stack([t, h, w], dim=1)
+        pp = convert_positions_to_block_layout(pp, n, H_p, W_p, spatial_merge_size=sms)
+        grid_rows = torch.tensor([[n, H_p, W_p]], dtype=torch.int32)
+        return list(bucket_counts), n_per_frame, pixel_values, grid_rows, pp.to(torch.int64)
+
     def encode_streaming_video(self, sample: MultiMixQASample) -> "Qwen2VLImageTaskSample":
         """Streaming video SFT: online decode + per-second interleave + per-token loss weight.
 
@@ -825,21 +858,28 @@ class Qwen2VLTaskEncoder(TaskEncoder):
             labels += [IGNORE_INDEX] * len(source_ids) + target_ids
             loss_weight += [0.0] * len(source_ids) + w
 
-        # 2) n_seconds = number of sentinels; pick fps (adaptive when stream_fps<=0).
+        # 2) n_seconds = number of sentinels.
         idx_list = [i for i, t in enumerate(input_ids) if t == self.stream_video_token_id]
         n_seconds = len(idx_list)
         assert n_seconds > 0, f"no <|video_pad|> sentinel in streaming sample {sample.__key__}"
-        fps = self.stream_fps if self.stream_fps and self.stream_fps > 0 else self._adaptive_stream_fps(n_seconds)
-        frames_per_sec = max(int(fps), 1)
 
-        # 3) Online decode + bucket by second.
-        bucket_counts, n_per_frame, pv_k, grid_rows, pp_k = self._decode_stream_frames(
-            sample.video_path, n_seconds, fps, frames_per_sec)
-        assert len(bucket_counts) == n_seconds
+        # 3) Get per-second frame buckets + tensors.
+        #    Offline: frames pre-extracted (in the shard), read from disk — no video decode.
+        #    Online:  decode the video at the CLI fps.
+        if getattr(sample, "bucket_counts", None) is not None and getattr(sample, "image", None):
+            bucket_counts, n_per_frame, pv_k, grid_rows, pp_k = self._load_stream_frames_offline(
+                sample.image, list(sample.bucket_counts))
+        else:
+            fps = self.stream_fps if self.stream_fps and self.stream_fps > 0 else self._adaptive_stream_fps(n_seconds)
+            frames_per_sec = max(int(fps), 1)
+            bucket_counts, n_per_frame, pv_k, grid_rows, pp_k = self._decode_stream_frames(
+                sample.video_path, n_seconds, fps, frames_per_sec)
+        assert len(bucket_counts) == n_seconds, (
+            f"bucket_counts {len(bucket_counts)} != n_seconds {n_seconds} for {sample.__key__}")
         if sum(bucket_counts) == 0:
             skip_malformed_multimodal_sample(
                 sample.__key__, "streaming_no_frames_in_window",
-                f"no decoded frame falls within [0, {n_seconds}) for {sample.video_path}")
+                f"no frame falls within [0, {n_seconds}) for {sample.__key__}")
 
         # 4) Splice: replace each sentinel with its second's per-frame vision blocks.
         block = [self.stream_vision_start_id] + [self.stream_image_pad_id] * n_per_frame + [self.stream_vision_end_id]
