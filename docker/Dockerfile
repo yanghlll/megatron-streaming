@@ -56,8 +56,14 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 #   opencv-python-headless —— cv2 兜底解码路径，服务器无显示环境用 headless 版免 libGL（必装）
 #   decord                —— 首选解码器，编解码覆盖更广；无 wheel 的环境装不上也没关系，
 #                            OV2 video_processing 是惰性 import、会自动退回 opencv。
+#
+# 关键：NGC 底座预装的 opencv 是按 NumPy 1.x 编译的，在 NumPy 2.x 下 `import cv2` 会崩
+# （numpy.core.multiarray failed to import）。且本栈里 scipy/pandas 等是按 NumPy 2.0 编的，
+# 不能降 numpy。所以先卸掉所有 opencv 变体，再装 >=4.10.0.84（提供 NumPy 2 的 wheel）。
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install opencv-python-headless && \
+    pip uninstall -y opencv-python opencv-python-headless \
+                     opencv-contrib-python opencv-contrib-python-headless 2>/dev/null || true; \
+    pip install "opencv-python-headless>=4.10.0.84" && \
     ( pip install decord || pip install eva-decord || \
       echo "[warn] decord 装不上，将用 opencv 兜底解码（功能正常，仅编解码覆盖略窄）" )
 
