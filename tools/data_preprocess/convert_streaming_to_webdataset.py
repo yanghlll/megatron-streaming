@@ -237,6 +237,26 @@ def _warn_once(key: str, msg: str, limit: int = 5) -> None:
             print(f"[skip] (further '{key}' messages suppressed)", file=sys.stderr)
 
 
+def _print_skip_summary(warn_agg: dict) -> None:
+    """Print a per-reason breakdown of skipped rows so it's clear WHY they were dropped."""
+    if not warn_agg:
+        return
+    total = sum(warn_agg.values())
+    reasons = {
+        "no_video_path": "无 video_path",
+        "video_not_found": "视频文件找不到（路径/挂载问题）",
+        "duration_zero": "读不到时长（ffprobe/opencv 失败、文件损坏）",
+        "event_beyond_video": "Q/A 时间戳超过视频时长（标注与视频不匹配）",
+        "all_responses_outside_window": f"所有 response 在 max_duration 之外（按设计丢弃，避免全 </silence>）",
+        "extract_no_frames": "抽帧得到 0 帧",
+    }
+    print(f"\n[skip breakdown] 共跳过 {total} 条，按原因：", file=sys.stderr)
+    for key, cnt in sorted(warn_agg.items(), key=lambda kv: -kv[1]):
+        print(f"    {cnt:>8}  {key}  —— {reasons.get(key, '')}", file=sys.stderr)
+    print("    说明：'all_responses_outside_window' 属正常按设计丢弃；max_duration 越小丢得越多。",
+          file=sys.stderr)
+
+
 def _report_zero(kept: int) -> None:
     if kept == 0:
         print(
@@ -254,6 +274,7 @@ def preprocess_row(row: dict, video_root, max_duration, tail_margin) -> dict | N
     """JoyAI row -> {messages, video_path}. None => skip the row."""
     video_path = row.get("video_path") or (row.get("videos") or [None])[0]
     if not video_path:
+        _warn_once("no_video_path", f"row has no video_path: id={row.get('id') or row.get('video_name')}")
         return None
     if video_root and not os.path.isabs(video_path) and not str(video_path).startswith("http"):
         video_path = os.path.join(video_root, video_path)
@@ -285,6 +306,8 @@ def preprocess_row(row: dict, video_root, max_duration, tail_margin) -> dict | N
             if t > effective_duration:
                 if truncated:
                     continue
+                _warn_once("event_beyond_video",
+                           f"question time {t}s > 视频时长 {effective_duration:.0f}s（未截断，疑似标注/视频不匹配）: {video_path}")
                 return None
             question_map[min(t, n_seconds - 1)] = q["content"]
 
@@ -298,11 +321,15 @@ def preprocess_row(row: dict, video_root, max_duration, tail_margin) -> dict | N
             if t > effective_duration:
                 if truncated:
                     continue
+                _warn_once("event_beyond_video",
+                           f"response time {t}s > 视频时长 {effective_duration:.0f}s（未截断，疑似标注/视频不匹配）: {video_path}")
                 return None
             response_map[min(t, n_seconds - 1)] = r["content"]
 
     # All responses fell outside the window -> would become all-</silence> -> drop.
     if raw_responses and not response_map:
+        _warn_once("all_responses_outside_window",
+                   f"所有 response 都超出 max_duration={max_duration}s（会退化成全 </silence>，故丢弃）: {video_path}")
         return None
 
     # Trim trailing pure-silence tail beyond the last event + margin.
@@ -474,7 +501,7 @@ def _process_chunk(src_files, tar_pattern, maxcount, maxsize, sample_prefix, wor
     if _KEPT is not None:
         with _KEPT.get_lock():
             _KEPT.value += kept
-    return worker_id, count, kept
+    return worker_id, count, kept, dict(_WARN_COUNTS)
 
 
 def collect_jsonl_paths(input_path: str) -> list:
@@ -555,12 +582,13 @@ def convert(input_path, output_dir, maxcount, maxsize, num_workers, keep_chunks,
         kept = mp.Value("i", 0)
         _init_worker(counter, kept)
         with tqdm(total=_count_lines(files)) as pbar:
-            _, count, n_kept = _process_chunk(
+            _, count, n_kept, warn = _process_chunk(
                 files, tar_pattern, maxcount, maxsize, "sample_", 0,
                 video_root, max_duration, tail_margin, xopts)
             pbar.n = count
             pbar.refresh()
         print(f"total={count} kept={n_kept} skipped={count - n_kept}")
+        _print_skip_summary(warn)
         _report_zero(n_kept)
     else:
         tmp_dir = os.path.join(output_dir, ".tmp_jsonl_chunks")
@@ -587,9 +615,14 @@ def convert(input_path, output_dir, maxcount, maxsize, num_workers, keep_chunks,
                 with counter.get_lock():
                     pbar.n = counter.value
                 pbar.refresh()
-        total = sum(c for _, c, _ in results)
-        total_kept = sum(k for _, _, k in results)
+        total = sum(c for _, c, _, _ in results)
+        total_kept = sum(k for _, _, k, _ in results)
+        warn_agg: dict = {}
+        for _, _, _, w in results:
+            for key, cnt in (w or {}).items():
+                warn_agg[key] = warn_agg.get(key, 0) + cnt
         print(f"total={total} kept={total_kept} skipped={total - total_kept}")
+        _print_skip_summary(warn_agg)
         _report_zero(total_kept)
         if not keep_chunks:
             shutil.rmtree(tmp_dir, ignore_errors=True)
