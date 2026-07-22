@@ -36,6 +36,7 @@ import multiprocessing as mp
 import os
 import shutil
 import subprocess
+import sys
 import time
 from collections.abc import Iterable
 from pathlib import Path
@@ -137,19 +138,21 @@ def _ffprobe_duration(video_path: str) -> float:
             return d
     except (ValueError, AttributeError, OSError):
         pass
-    try:
-        import cv2
-
-        cap = cv2.VideoCapture(video_path)
+    # opencv fallback — lazily/​once imported and guarded: a NumPy-1.x-built cv2 raises
+    # ImportError under NumPy 2, which we swallow so it never crashes or spams per row.
+    cv2 = _get_cv2()
+    if cv2 is not None:
         try:
-            frames = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
-            fps = cap.get(cv2.CAP_PROP_FPS) or 0
-        finally:
-            cap.release()
-        if frames > 0 and fps > 0:
-            return float(frames) / float(fps)
-    except Exception:
-        pass
+            cap = cv2.VideoCapture(video_path)
+            try:
+                frames = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
+                fps = cap.get(cv2.CAP_PROP_FPS) or 0
+            finally:
+                cap.release()
+            if frames > 0 and fps > 0:
+                return float(frames) / float(fps)
+        except Exception:
+            pass
     return 0.0
 
 
@@ -168,6 +171,50 @@ def _adaptive_fps(duration: float) -> float:
     return 4.0
 
 
+# opencv is imported at most once per process, guarded: if the installed cv2 was built
+# against NumPy 1.x it can't import under NumPy 2 -> we set _CV2=None and skip the fallback
+# instead of crashing / printing a NumPy warning+stack on every single row.
+_CV2 = "unset"
+
+
+def _get_cv2():
+    global _CV2
+    if _CV2 == "unset":
+        try:
+            import cv2 as _c
+            _CV2 = _c
+        except Exception:
+            _CV2 = None
+            print("[info] opencv 不可用（可能是 NumPy 1.x/2.x ABI 问题）；只用 ffprobe 读时长。",
+                  file=sys.stderr)
+    return _CV2
+
+
+_WARN_COUNTS: dict = {}
+
+
+def _warn_once(key: str, msg: str, limit: int = 5) -> None:
+    n = _WARN_COUNTS.get(key, 0) + 1
+    _WARN_COUNTS[key] = n
+    if n <= limit:
+        print(f"[skip] {msg}", file=sys.stderr)
+        if n == limit:
+            print(f"[skip] (further '{key}' messages suppressed)", file=sys.stderr)
+
+
+def _report_zero(kept: int) -> None:
+    if kept == 0:
+        print(
+            "\n[WARN] kept=0 —— 所有样本都被跳过！最可能的原因:\n"
+            "   (1) video 路径不对: --video_root + jsonl 里的 video_path 拼不出真实文件;\n"
+            "   (2) 容器内没有 ffprobe(ffmpeg 没装)。\n"
+            "   手动验证一条(把 <video> 换成一个真实路径):\n"
+            "       which ffprobe && ffprobe -v quiet -show_entries format=duration "
+            "-of default=nk=1:nw=1 <video>",
+            file=sys.stderr,
+        )
+
+
 def preprocess_row(row: dict, video_root, max_duration, tail_margin) -> dict | None:
     """JoyAI row -> {messages, video_path}. None => skip the row."""
     video_path = row.get("video_path") or (row.get("videos") or [None])[0]
@@ -176,8 +223,17 @@ def preprocess_row(row: dict, video_root, max_duration, tail_margin) -> dict | N
     if video_root and not os.path.isabs(video_path) and not str(video_path).startswith("http"):
         video_path = os.path.join(video_root, video_path)
 
+    is_remote = str(video_path).startswith("http")
+    if not is_remote and not os.path.exists(video_path):
+        _warn_once("video_not_found",
+                   f"video not found: {video_path}  (检查 --video_root 和 jsonl 里的 video_path)")
+        return None
+
     duration = _ffprobe_duration(video_path)
     if duration <= 0:
+        _warn_once("duration_zero",
+                   f"读不到时长(ffprobe+opencv 都失败): {video_path}  "
+                   f"(确认容器内有 ffprobe: `which ffprobe`，或视频文件可读)")
         return None
 
     if max_duration and max_duration > 0:
@@ -382,6 +438,7 @@ def convert(input_path, output_dir, maxcount, maxsize, num_workers, keep_chunks,
             pbar.n = count
             pbar.refresh()
         print(f"total={count} kept={n_kept} skipped={count - n_kept}")
+        _report_zero(n_kept)
     else:
         tmp_dir = os.path.join(output_dir, ".tmp_jsonl_chunks")
         chunk_paths, total_lines = _split_jsonl(files, num_workers, tmp_dir)
@@ -410,6 +467,7 @@ def convert(input_path, output_dir, maxcount, maxsize, num_workers, keep_chunks,
         total = sum(c for _, c, _ in results)
         total_kept = sum(k for _, _, k in results)
         print(f"total={total} kept={total_kept} skipped={total - total_kept}")
+        _report_zero(total_kept)
         if not keep_chunks:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
