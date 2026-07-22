@@ -23,8 +23,14 @@ ENV DEBIAN_FRONTEND=noninteractive \
     HF_HUB_ENABLE_HF_TRANSFER=0
 # PIP_RESUME_RETRIES 需要 pip>=25.1（下面会升级）；大包下一半断了从断点续。
 
-# NGC 镜像自带 /etc/pip/constraint.txt 会钉死某些包版本，装 requirements 时冲突 -> 清空
-RUN if [ -f /etc/pip/constraint.txt ]; then cp /etc/pip/constraint.txt /etc/pip/constraint.txt.bak; : > /etc/pip/constraint.txt; fi
+# NGC 的 /etc/pip/constraint.txt 会钉死一批版本（和 transformers==5.7 冲突）-> 清空。
+# 但必须保留 “numpy<2” 这条：NGC 的 torch / opencv 都是按 NumPy 1.x 编译的，一旦被某个
+# pip 依赖顺手升到 NumPy 2.x，torch 的 numpy 桥（torch.from_numpy）和 cv2 都会崩
+# （"Failed to initialize NumPy" / "numpy.core.multiarray failed to import"）。用独立约束
+# 文件把整条依赖链锁在 NumPy 1.x，让 scipy/pandas/opencv 等也解析成 NumPy-1.x 兼容构建，全栈一致。
+RUN if [ -f /etc/pip/constraint.txt ]; then : > /etc/pip/constraint.txt; fi; \
+    mkdir -p /etc/pip && printf 'numpy<2\n' > /etc/pip/streaming-constraint.txt
+ENV PIP_CONSTRAINT=/etc/pip/streaming-constraint.txt
 
 # 系统工具 + ffmpeg（streaming 数据 preprocessor 用 ffprobe 拿视频时长；
 # 否则每行时长=0 -> 数据集全空）
@@ -52,23 +58,25 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     sed -i 's/^sentencepiece==0\.1\.98/sentencepiece>=0.2.0/' /tmp/requirements.txt && \
     pip install -r /tmp/requirements.txt && rm -f /tmp/requirements.txt
 
-# streaming 在线解码依赖：
-#   opencv-python-headless —— cv2 兜底解码路径，服务器无显示环境用 headless 版免 libGL（必装）
-#   decord                —— 首选解码器，编解码覆盖更广；无 wheel 的环境装不上也没关系，
-#                            OV2 video_processing 是惰性 import、会自动退回 opencv。
-#
-# 关键：NGC 底座预装的 opencv 是按 NumPy 1.x 编译的，在 NumPy 2.x 下 `import cv2` 会崩
-# （numpy.core.multiarray failed to import）。且本栈里 scipy/pandas 等是按 NumPy 2.0 编的，
-# 不能降 numpy。所以先卸掉所有 opencv 变体，再装 >=4.10.0.84（提供 NumPy 2 的 wheel）。
+# streaming 在线解码依赖：opencv(cv2 兜底) + decord(首选)。numpy<2 约束下装到的都是
+# NumPy-1.x 兼容构建，与 NGC 的 torch 一致。用 headless 版免 libGL（服务器无显示）；先卸掉
+# 底座自带的非 headless opencv，避免 import cv2 撞到需要 libGL 的那个。
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip uninstall -y opencv-python opencv-python-headless \
                      opencv-contrib-python opencv-contrib-python-headless 2>/dev/null || true; \
-    pip install "opencv-python-headless>=4.10.0.84" && \
+    pip install opencv-python-headless && \
     ( pip install decord || pip install eva-decord || \
       echo "[warn] decord 装不上，将用 opencv 兜底解码（功能正常，仅编解码覆盖略窄）" )
 
 # NGC 自带 nvidia-modelopt 会干扰 from_pretrained，卸掉（仓库官方 dockerfile 同样处理）
 RUN pip uninstall -y nvidia-modelopt || true
+
+# 构建期自检：numpy 必须是 1.x，且 torch 的 numpy 桥 + cv2 能用（否则训练必崩）。
+# 让问题在 build 阶段就暴露，而不是等跑训练。纯 CPU import，不需要 GPU。
+RUN python -c "import numpy, torch, cv2; \
+assert numpy.__version__.startswith('1.'), 'numpy=%s 需 <2 以匹配 NGC 的 torch/opencv' % numpy.__version__; \
+torch.from_numpy(numpy.zeros(2)); \
+print('[selfcheck] numpy', numpy.__version__, '| torch.from_numpy OK | cv2', cv2.__version__)"
 
 # 运行期环境：设进镜像 ENV，这样 `docker exec -it lov2-stream bash` 进来的 shell 也直接
 # 带上 AIAK 路径 / PYTHONPATH（exec 不走 entrypoint，只有镜像 ENV 会被继承）。
