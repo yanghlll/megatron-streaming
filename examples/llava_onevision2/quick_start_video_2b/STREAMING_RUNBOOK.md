@@ -54,11 +54,14 @@ bash examples/llava_onevision2/convert/convert_2b_hf_to_mcore.sh \
 
 ```bash
 python tools/data_preprocess/convert_streaming_to_webdataset.py \
-  --jsonl      /shared/data/joyai_annotations.jsonl \
+  --jsonl      /shared/data/joyai_annotations \
   --output_dir /shared/data/joy_streaming_webdataset \
   --video_root /shared/data/videos \
   --max_duration 230 --tail_margin 10 --num_workers 32
 ```
+
+`--jsonl` 支持三种输入：**单个 `.jsonl`**、**目录**（递归 `**/*.jsonl`，含子目录）、或**通配符**
+（如 `'/shared/data/**/*.jsonl'`）。目录/子目录会自动全部合并处理。
 
 只读时长、不抽帧，快。产出 energon WebDataset（视频按路径引用），即 `DATA_PATH`。
 改 fps 无需重转数据（fps 是训练时参数）。

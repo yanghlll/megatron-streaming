@@ -54,7 +54,7 @@ bash examples/llava_onevision2/convert/convert_2b_hf_to_mcore.sh  <HF权重>  <m
 
 # ② 生成 streaming 数据（CPU，快，不抽帧）
 python tools/data_preprocess/convert_streaming_to_webdataset.py \
-  --jsonl <标注.jsonl> --output_dir <WebDataset输出> --video_root <视频目录> \
+  --jsonl <标注目录/或单个.jsonl> --output_dir <WebDataset输出> --video_root <视频目录> \
   --max_duration 230 --tail_margin 10 --num_workers 32
 
 # ③ 训练（先冒烟 20 步；位置参数: TP PP SEQ_LEN MBS GBS NSTEP）

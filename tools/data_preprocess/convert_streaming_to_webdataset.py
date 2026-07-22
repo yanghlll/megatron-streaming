@@ -270,20 +270,26 @@ def _init_worker(counter, kept) -> None:
     _KEPT = kept
 
 
-def _process_chunk(chunk_path, tar_pattern, maxcount, maxsize, sample_prefix, worker_id,
+def _process_chunk(src_files, tar_pattern, maxcount, maxsize, sample_prefix, worker_id,
                    video_root, max_duration, tail_margin):
+    """Process one or more source jsonl files into a shard set (tar_pattern)."""
+    if isinstance(src_files, str):
+        src_files = [src_files]
     count = 0
     kept = 0
     with wds.ShardWriter(tar_pattern, maxcount=maxcount, maxsize=maxsize, verbose=0) as shard_writer:
-        for idx, entry in enumerate(iter_jsonl(chunk_path)):
-            sample = _build_sample(entry, idx, sample_prefix, video_root, max_duration, tail_margin)
-            count += 1
-            if sample is not None:
-                shard_writer.write(sample)
-                kept += 1
-            if _COUNTER is not None and count % 50 == 0:
-                with _COUNTER.get_lock():
-                    _COUNTER.value += 50
+        idx = 0
+        for src in src_files:
+            for entry in iter_jsonl(src):
+                sample = _build_sample(entry, idx, sample_prefix, video_root, max_duration, tail_margin)
+                idx += 1
+                count += 1
+                if sample is not None:
+                    shard_writer.write(sample)
+                    kept += 1
+                if _COUNTER is not None and count % 50 == 0:
+                    with _COUNTER.get_lock():
+                        _COUNTER.value += 50
         if _COUNTER is not None:
             remainder = count % 50
             if remainder:
@@ -295,13 +301,41 @@ def _process_chunk(chunk_path, tar_pattern, maxcount, maxsize, sample_prefix, wo
     return worker_id, count, kept
 
 
-def _count_lines(path: str) -> int:
-    with open(path, "r", encoding="utf-8") as f:
-        return sum(1 for _ in f)
+def collect_jsonl_paths(input_path: str) -> list:
+    """Resolve input to a list of .jsonl files.
+
+    Accepts:
+      - a single file:  /data/a.jsonl
+      - a directory:    /data/anno         (recursively globs **/*.jsonl, incl. subdirs)
+      - a glob pattern: '/data/**/*.jsonl' or '/data/*.jsonl'
+    """
+    import glob as _glob
+
+    if os.path.isdir(input_path):
+        files = _glob.glob(os.path.join(input_path, "**", "*.jsonl"), recursive=True)
+    elif any(c in input_path for c in "*?["):
+        files = _glob.glob(input_path, recursive=True)
+    else:
+        files = [input_path]
+    files = sorted(f for f in files if os.path.isfile(f) and f.endswith(".jsonl"))
+    if not files:
+        raise FileNotFoundError(f"no .jsonl found under: {input_path}")
+    return files
 
 
-def _split_jsonl(jsonl_path: str, num_workers: int, tmp_dir: str):
-    total_lines = _count_lines(jsonl_path)
+def _count_lines(paths) -> int:
+    if isinstance(paths, str):
+        paths = [paths]
+    total = 0
+    for p in paths:
+        with open(p, "r", encoding="utf-8") as f:
+            total += sum(1 for _ in f)
+    return total
+
+
+def _split_jsonl(files: list, num_workers: int, tmp_dir: str):
+    """Merge all input files' lines and split evenly into <= num_workers chunk files."""
+    total_lines = _count_lines(files)
     Path(tmp_dir).mkdir(parents=True, exist_ok=True)
     if total_lines == 0:
         empty_path = os.path.join(tmp_dir, "chunk-00.jsonl")
@@ -314,21 +348,26 @@ def _split_jsonl(jsonl_path: str, num_workers: int, tmp_dir: str):
     counts = [0] * num_workers
     current = 0
     written = 0
-    with open(jsonl_path, "r", encoding="utf-8") as f:
-        for line in f:
-            if written >= per_chunk and current < num_workers - 1:
-                current += 1
-                written = 0
-            writers[current].write(line)
-            written += 1
-            counts[current] += 1
+    for src in files:
+        with open(src, "r", encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                if written >= per_chunk and current < num_workers - 1:
+                    current += 1
+                    written = 0
+                writers[current].write(line if line.endswith("\n") else line + "\n")
+                written += 1
+                counts[current] += 1
     for w in writers:
         w.close()
     return [p for p, c in zip(chunk_paths, counts) if c > 0], total_lines
 
 
-def convert(jsonl_path, output_dir, maxcount, maxsize, num_workers, keep_chunks,
+def convert(input_path, output_dir, maxcount, maxsize, num_workers, keep_chunks,
             video_root, max_duration, tail_margin):
+    files = collect_jsonl_paths(input_path)
+    print(f"[collect] {len(files)} jsonl file(s) under {input_path}")
     os.makedirs(output_dir, exist_ok=True)
 
     if num_workers <= 1:
@@ -336,16 +375,16 @@ def convert(jsonl_path, output_dir, maxcount, maxsize, num_workers, keep_chunks,
         counter = mp.Value("i", 0)
         kept = mp.Value("i", 0)
         _init_worker(counter, kept)
-        with tqdm(total=_count_lines(jsonl_path)) as pbar:
+        with tqdm(total=_count_lines(files)) as pbar:
             _, count, n_kept = _process_chunk(
-                jsonl_path, tar_pattern, maxcount, maxsize, "sample_", 0,
+                files, tar_pattern, maxcount, maxsize, "sample_", 0,
                 video_root, max_duration, tail_margin)
             pbar.n = count
             pbar.refresh()
         print(f"total={count} kept={n_kept} skipped={count - n_kept}")
     else:
         tmp_dir = os.path.join(output_dir, ".tmp_jsonl_chunks")
-        chunk_paths, total_lines = _split_jsonl(jsonl_path, num_workers, tmp_dir)
+        chunk_paths, total_lines = _split_jsonl(files, num_workers, tmp_dir)
         worker_count = len(chunk_paths)
         ctx = mp.get_context("fork")
         counter = ctx.Value("i", 0)
@@ -354,7 +393,7 @@ def convert(jsonl_path, output_dir, maxcount, maxsize, num_workers, keep_chunks,
             args_list = []
             for worker_id, chunk_path in enumerate(chunk_paths):
                 tar_pattern = os.path.join(output_dir, f"instruct_{worker_id:02d}_%06d.tar")
-                args_list.append((chunk_path, tar_pattern, maxcount, maxsize,
+                args_list.append(([chunk_path], tar_pattern, maxcount, maxsize,
                                   f"sample_{worker_id:02d}_", worker_id,
                                   video_root, max_duration, tail_margin))
             results_async = pool.starmap_async(_process_chunk, args_list)
@@ -379,7 +418,10 @@ def convert(jsonl_path, output_dir, maxcount, maxsize, num_workers, keep_chunks,
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
-    p.add_argument("--jsonl", required=True, help="Input JoyAI streaming annotation jsonl")
+    p.add_argument("--jsonl", required=True,
+                   help="Input JoyAI streaming annotations: a single .jsonl file, a DIRECTORY "
+                        "(recursively globs **/*.jsonl, including subdirs), or a glob pattern "
+                        "(e.g. '/data/**/*.jsonl').")
     p.add_argument("--output_dir", required=True, help="Output dir for WDS shards")
     p.add_argument("--video_root", default=None, help="Root dir for relative video_path")
     p.add_argument("--max_duration", type=int, default=320, help="Time-axis cap in seconds (0=off)")
@@ -395,7 +437,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     convert(
-        jsonl_path=args.jsonl,
+        input_path=args.jsonl,
         output_dir=args.output_dir,
         maxcount=args.maxcount,
         maxsize=args.maxsize,
